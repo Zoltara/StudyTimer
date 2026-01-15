@@ -1,0 +1,1 @@
+module.exports = { plugins: { tailwindcss: {}, autoprefixer: {}, }, } ``` ### 4. `tailwind.config.js` (NEW - Required for colors to work) *Location: Root folder (main folder)* ```javascript /** @type {import('tailwindcss').Config} */ module.exports = { content: [ "./app/**/*.{js,ts,jsx,tsx,mdx}", ], theme: { extend: {}, }, plugins: [], }

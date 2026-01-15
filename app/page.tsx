@@ -1,11 +1,1 @@
-export default function Home() { return ( 
-<div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white font-sans"> 
-    <h1 className="text-5xl font-bold mb-4 text-emerald-500">StudyTimer</h1> 
-    <p className="text-xl text-zinc-400 mb-8 text-center px-4"> Socially pressured studying. <br/> Stay focused with your friends. </p> 
-    <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 shadow-xl w-80 text-center"> 
-        <div className="text-6-xl font-mono mb-6 text-6xl">25:00</div> 
-          <button className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-3 rounded-lg font-semibold transition-all"> Start Session </button> 
-        </div> 
-    </div> ); 
-        } 
-        
+'use client'; import { useState, useEffect } from 'react'; export default function Home() { const [seconds, setSeconds] = useState(1500); const [isActive, setIsActive] = useState(false); useEffect(() => { let interval: any; if (isActive && seconds > 0) { interval = setInterval(() => setSeconds(s => s - 1), 1000); } else { clearInterval(interval); } return () => clearInterval(interval); }, [isActive, seconds]); const formatTime = (s: number) => { const mins = Math.floor(s / 60); const secs = s % 60; return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`; }; return ( <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white font-sans"> <h1 className="text-5xl font-bold mb-4 text-emerald-500">StudyTimer</h1> <p className="text-xl text-zinc-400 mb-8 text-center px-4"> Stay focused with your friends. </p> <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 shadow-xl w-80 text-center"> <div className="text-6xl font-mono mb-6">{formatTime(seconds)}</div> <button onClick={() => setIsActive(!isActive)} className={`w-full py-3 rounded-lg font-semibold transition-all ${ isActive ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500' }`} > {isActive ? 'Pause Session' : 'Start Session'} </button> </div> </div> ); } 
