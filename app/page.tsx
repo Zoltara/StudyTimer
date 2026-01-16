@@ -510,6 +510,46 @@ export default function Home() {
         };
         reloadExams();
       })
+      .on('broadcast', { event: 'timer-request' }, (payload) => {
+        const { requestedBy } = payload.payload as { requestedBy: string };
+        // Only the creator responds to timer requests
+        if (isGroupCreator && requestedBy !== userName) {
+          // Send current timer state to the new user
+          supabase.channel(`settings-${currentGroup.id}`).send({
+            type: 'broadcast',
+            event: 'timer-response',
+            payload: {
+              timerState,
+              seconds,
+              cycleCount,
+              settings,
+              respondedBy: userName,
+            },
+          });
+        }
+      })
+      .on('broadcast', { event: 'timer-response' }, (payload) => {
+        const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, settings: newSettings } = payload.payload as {
+          timerState: TimerState;
+          seconds: number;
+          cycleCount: number;
+          settings: TimerSettings;
+          respondedBy: string;
+        };
+        // Only non-creators who use synced timer should apply this
+        if (!isGroupCreator && useSyncedTimer) {
+          setTimerState(newTimerState);
+          setSeconds(newSeconds);
+          setCycleCount(newCycleCount);
+          setSettings(newSettings);
+          
+          // Start ticking if in focus state
+          if (newTimerState === 'focus') {
+            const audio = getAudioManager();
+            audio?.startTicking();
+          }
+        }
+      })
       .on('broadcast', { event: 'group-deleted' }, (payload) => {
         const { groupName, deletedBy } = payload.payload as {
           groupName: string;
@@ -934,6 +974,17 @@ export default function Home() {
         text: `👋 ${userName} joined the study group!`,
         is_system: true,
       });
+
+      // Request timer state from creator (if not the creator)
+      if (!isGroupCreator) {
+        setTimeout(() => {
+          supabase.channel(`settings-${currentGroup.id}`).send({
+            type: 'broadcast',
+            event: 'timer-request',
+            payload: { requestedBy: userName },
+          });
+        }, 500); // Small delay to ensure channel is ready
+      }
     }
   };
 
@@ -974,6 +1025,17 @@ export default function Home() {
       text: `👋 ${userName} is back!`,
       is_system: true,
     });
+
+    // Request timer state from creator (if not the creator)
+    if (!isGroupCreator) {
+      setTimeout(() => {
+        supabase.channel(`settings-${currentGroup.id}`).send({
+          type: 'broadcast',
+          event: 'timer-request',
+          payload: { requestedBy: userName },
+        });
+      }, 500); // Small delay to ensure channel is ready
+    }
   };
 
   const rejectExistingUser = () => {
