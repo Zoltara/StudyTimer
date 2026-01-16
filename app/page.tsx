@@ -460,13 +460,52 @@ export default function Home() {
     async (status: User['status'], streak?: number) => {
       if (!currentUser) return;
 
-      const updates: Partial<User> = { status };
+      const updates: Partial<User> & { updated_at?: string } = { status, updated_at: new Date().toISOString() };
       if (streak !== undefined) updates.streak = streak;
 
       await supabase.from('users').update(updates).eq('id', currentUser.id);
     },
     [currentUser]
   );
+
+  // Heartbeat to track user activity - updates every 5 minutes
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const heartbeat = async () => {
+      await supabase.from('users').update({ updated_at: new Date().toISOString() }).eq('id', currentUser.id);
+    };
+
+    // Initial heartbeat
+    heartbeat();
+
+    // Send heartbeat every 5 minutes
+    const interval = setInterval(heartbeat, 5 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [currentUser]);
+
+  // Check for inactive users (offline for more than 30 minutes) and mark them offline
+  useEffect(() => {
+    if (!currentGroup) return;
+
+    const checkInactiveUsers = async () => {
+      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      
+      // Mark users as offline if they haven't updated in 30 minutes and are not already offline
+      await supabase
+        .from('users')
+        .update({ status: 'offline' })
+        .eq('group_id', currentGroup.id)
+        .lt('updated_at', thirtyMinutesAgo)
+        .neq('status', 'offline');
+    };
+
+    // Check every minute
+    const interval = setInterval(checkInactiveUsers, 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [currentGroup]);
 
   // Timer logic
   useEffect(() => {
@@ -655,6 +694,11 @@ export default function Home() {
     if (data) {
       setCurrentUser(data);
       setIsNameSet(true);
+      
+      // Auto-set study target to group topic
+      if (currentGroup?.topic) {
+        setStudyTarget(currentGroup.topic);
+      }
 
       // Send welcome message
       await supabase.from('messages').insert({
@@ -690,6 +734,11 @@ export default function Home() {
     setCurrentStreak(existingUser.streak || 0);
     setIsNameSet(true);
     setShowNameConfirm(false);
+    
+    // Auto-set study target to group topic
+    if (currentGroup?.topic) {
+      setStudyTarget(currentGroup.topic);
+    }
 
     // Send welcome back message
     await supabase.from('messages').insert({
@@ -1230,6 +1279,8 @@ export default function Home() {
             <div className="flex items-center justify-center gap-2 mt-2">
               <span className="text-zinc-400">📚 {currentGroup.name}</span>
               <span className="text-zinc-600">•</span>
+              <span className="text-purple-400">Created by {currentGroup.created_by}</span>
+              <span className="text-zinc-600">•</span>
               <button
                 onClick={copyGroupCode}
                 className="text-emerald-400 hover:text-emerald-300 font-mono"
@@ -1632,6 +1683,47 @@ export default function Home() {
                 className="w-full py-2 rounded-lg text-sm bg-purple-600 hover:bg-purple-700 transition"
               >
                 🚀 Start a New Session
+              </button>
+              
+              <button
+                onClick={async () => {
+                  if (!currentUser || !currentGroup) return;
+                  
+                  // Send leave message
+                  await supabase.from('messages').insert({
+                    user_id: currentUser.id,
+                    user_name: 'System',
+                    group_id: currentGroup.id,
+                    text: `👋 ${userName} left the group.`,
+                    is_system: true,
+                  });
+                  
+                  // Delete user from the group
+                  await supabase.from('users').delete().eq('id', currentUser.id);
+                  
+                  // Stop ticking audio if playing
+                  getAudioManager()?.stopTicking();
+                  
+                  // Reset all state
+                  setCurrentUser(null);
+                  setCurrentGroup(null);
+                  setIsNameSet(false);
+                  setGroupScreen('select');
+                  setFriends([]);
+                  setAllUsers([]);
+                  setMessages([]);
+                  setExams([]);
+                  setTimerState('idle');
+                  setSeconds(DEFAULT_SETTINGS.focusTime * 60);
+                  setCurrentStreak(0);
+                  setSessionsCompleted(0);
+                  setCycleCount(0);
+                  setStudyTarget('');
+                  setIsGroupCreator(false);
+                }}
+                className="w-full py-2 rounded-lg text-sm bg-red-600 hover:bg-red-700 transition mt-2"
+              >
+                🚪 Leave this Group
               </button>
             </div>
 
