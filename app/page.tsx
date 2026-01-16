@@ -1694,18 +1694,20 @@ export default function Home() {
                       setEditingSettings(true);
                     }}
                     className={`w-full py-2 rounded-lg text-sm transition ${
-                      !isGroupCreator && useSyncedTimer
-                        ? 'bg-zinc-800/50 text-zinc-500 cursor-not-allowed'
-                        : 'bg-zinc-800 hover:bg-zinc-700'
+                      isGroupCreator
+                        ? 'bg-zinc-800 hover:bg-zinc-700'
+                        : useSyncedTimer
+                          ? 'bg-zinc-800/50 text-zinc-500 cursor-not-allowed'
+                          : 'bg-zinc-800 hover:bg-zinc-700'
                     }`}
                     disabled={!isGroupCreator && useSyncedTimer}
                     title={!isGroupCreator && useSyncedTimer ? 'Settings are controlled by the group creator. Switch to "Use Own Timer" to change settings.' : ''}
                   >
-                    ⚙️ Timer Settings {!isGroupCreator && useSyncedTimer && '(Synced)'}
+                    ⚙️ Timer Settings {isGroupCreator && '👑'} {!isGroupCreator && useSyncedTimer && '(Synced)'}
                   </button>
                 ) : (
                   <div className="space-y-3">
-                    <div className="text-sm text-zinc-400 text-center">Timer Settings</div>
+                    <div className="text-sm text-zinc-400 text-center">Timer Settings {isGroupCreator && '👑'}</div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-xs text-zinc-500">Focus (min)</label>
