@@ -226,6 +226,8 @@ export default function Home() {
   
   // Ref to store the settings channel for broadcasting
   const settingsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  // Track if the channel is subscribed and ready
+  const channelReadyRef = useRef<boolean>(false);
 
   // Keep refs in sync with state
   useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
@@ -454,6 +456,7 @@ export default function Home() {
     
     settingsChannel
       .on('broadcast', { event: 'settings-change' }, (payload) => {
+        console.log('[settings-change] received:', payload);
         const { settings: newSettings, changedBy } = payload.payload as {
           settings: TimerSettings;
           changedBy: string;
@@ -475,6 +478,7 @@ export default function Home() {
         }
       })
       .on('broadcast', { event: 'timer-sync' }, (payload) => {
+        console.log('[timer-sync] received:', payload);
         const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, changedBy } = payload.payload as {
           timerState: TimerState;
           seconds: number;
@@ -537,9 +541,15 @@ export default function Home() {
         reloadExams();
       })
       .on('broadcast', { event: 'timer-request' }, (payload) => {
+        console.log('[timer-request] received:', payload, 'isGroupCreator:', isGroupCreatorRef.current);
         const { requestedBy } = payload.payload as { requestedBy: string };
         // Only the creator responds to timer requests
         if (isGroupCreatorRef.current && requestedBy !== userNameRef.current) {
+          console.log('[timer-request] Creator responding with:', {
+            timerState: timerStateRef.current,
+            seconds: secondsRef.current,
+            cycleCount: cycleCountRef.current,
+          });
           // Send current timer state to the new user
           settingsChannelRef.current?.send({
             type: 'broadcast',
@@ -555,6 +565,7 @@ export default function Home() {
         }
       })
       .on('broadcast', { event: 'timer-response' }, (payload) => {
+        console.log('[timer-response] received:', payload);
         const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, settings: newSettings } = payload.payload as {
           timerState: TimerState;
           seconds: number;
@@ -564,6 +575,7 @@ export default function Home() {
         };
         // Only non-creators who use synced timer should apply this
         if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
+          console.log('[timer-response] Applying timer state:', { newTimerState, newSeconds, newCycleCount });
           setTimerState(newTimerState);
           setSeconds(newSeconds);
           setCycleCount(newCycleCount);
@@ -603,13 +615,20 @@ export default function Home() {
         setIsGroupCreator(false);
         setUseSyncedTimer(true);
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[settingsChannel] subscribe status:', status);
+        if (status === 'SUBSCRIBED') {
+          channelReadyRef.current = true;
+          console.log('[settingsChannel] Channel is ready!');
+        }
+      });
 
     return () => {
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
       settingsChannelRef.current = null;
+      channelReadyRef.current = false;
     };
   }, [currentUser, currentGroup, chatSoundEnabled]);
 
@@ -617,14 +636,24 @@ export default function Home() {
   useEffect(() => {
     if (!currentUser || !currentGroup || isGroupCreator) return;
     
-    // Small delay to ensure channel is subscribed
-    const timeoutId = setTimeout(() => {
-      settingsChannelRef.current?.send({
-        type: 'broadcast',
-        event: 'timer-request',
-        payload: { requestedBy: userName },
-      });
-    }, 1000);
+    // Wait for channel to be ready, then request timer state
+    const requestTimerState = () => {
+      if (channelReadyRef.current && settingsChannelRef.current) {
+        console.log('[timer-request] Sending request to sync timer...');
+        settingsChannelRef.current.send({
+          type: 'broadcast',
+          event: 'timer-request',
+          payload: { requestedBy: userName },
+        });
+      } else {
+        // Retry after a short delay if channel not ready
+        console.log('[timer-request] Channel not ready, retrying...');
+        setTimeout(requestTimerState, 500);
+      }
+    };
+    
+    // Start trying after a delay to let channel subscribe
+    const timeoutId = setTimeout(requestTimerState, 1000);
     
     return () => clearTimeout(timeoutId);
   }, [currentUser, currentGroup, isGroupCreator, userName]);
@@ -790,8 +819,9 @@ export default function Home() {
 
     const broadcastTick = () => {
       if (timerStateRef.current === 'idle') return;
-      if (!settingsChannelRef.current) return;
+      if (!settingsChannelRef.current || !channelReadyRef.current) return;
       
+      console.log('[timer-tick] Broadcasting:', { seconds: secondsRef.current, timerState: timerStateRef.current });
       settingsChannelRef.current.send({
         type: 'broadcast',
         event: 'timer-tick',
