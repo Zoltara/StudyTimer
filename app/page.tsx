@@ -335,47 +335,89 @@ export default function Home() {
     loadUsers();
     loadExams();
 
-    // Subscribe to new messages
+    // Subscribe to new messages for this group
     const messagesChannel = supabase
-      .channel('messages-channel')
+      .channel(`messages-${currentGroup.id}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages' },
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
           const m = payload.new as DbMessage;
+          // Only process messages for this group
+          if (m.group_id !== currentGroup.id) return;
+          
           // Play notification sound for messages from others (not system, not self)
           if (!m.is_system && m.user_name !== userName && chatSoundEnabled) {
             getAudioManager()?.playSound(AUDIO_FILES.start);
           }
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: m.id,
-              user: m.user_name,
-              text: m.text,
-              isSystem: m.is_system,
-              timestamp: new Date(m.created_at),
-            },
-          ]);
+          setMessages((prev) => {
+            // Avoid duplicates
+            if (prev.some(msg => msg.id === m.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: m.id,
+                user: m.user_name,
+                text: m.text,
+                isSystem: m.is_system,
+                timestamp: new Date(m.created_at),
+              },
+            ];
+          });
         }
       )
       .subscribe();
 
-    // Subscribe to user status changes
+    // Subscribe to user status changes for this group
     const usersChannel = supabase
-      .channel('users-channel')
+      .channel(`users-${currentGroup.id}`)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'users' },
+        { event: 'UPDATE', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
           const u = payload.new as User;
-          if (u.id !== currentUser.id) {
+          if (u.id !== currentUser.id && u.group_id === currentGroup.id) {
             setFriends((prev) =>
               prev.map((f) =>
                 f.id === u.id ? { ...f, status: u.status, streak: u.streak } : f
               )
             );
             setAllUsers((prev) => prev.map((user) => (user.id === u.id ? u : user)));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
+        (payload) => {
+          const u = payload.new as User;
+          if (u.id !== currentUser.id && u.group_id === currentGroup.id) {
+            // Add new user to friends list
+            setFriends((prev) => {
+              if (prev.some(f => f.id === u.id)) return prev;
+              return [...prev, {
+                id: u.id,
+                name: u.name,
+                status: u.status,
+                streak: u.streak,
+                lastSeen: new Date(u.created_at),
+              }];
+            });
+            setAllUsers((prev) => {
+              if (prev.some(user => user.id === u.id)) return prev;
+              return [...prev, u];
+            });
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'users' },
+        (payload) => {
+          const deletedId = payload.old?.id;
+          if (deletedId) {
+            setFriends((prev) => prev.filter(f => f.id !== deletedId));
+            setAllUsers((prev) => prev.filter(u => u.id !== deletedId));
           }
         }
       )
@@ -401,21 +443,51 @@ export default function Home() {
         }
       })
       .on('broadcast', { event: 'timer-sync' }, (payload) => {
-        const { timerState: newTimerState, seconds: newSeconds, changedBy } = payload.payload as {
+        const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, changedBy } = payload.payload as {
           timerState: TimerState;
           seconds: number;
+          cycleCount: number;
           changedBy: string;
         };
-        // Sync timer from group creator
-        if (changedBy !== userName) {
+        // Sync timer from group creator (only for non-creators)
+        if (changedBy !== userName && !isGroupCreator) {
+          const audio = getAudioManager();
+          const prevTimerState = timerState;
+          
           setTimerState(newTimerState);
           setSeconds(newSeconds);
-          if (newTimerState === 'focus') {
-            setSettingsWarning(`🚀 ${changedBy} started a focus session!`);
-          } else if (newTimerState === 'break') {
-            setSettingsWarning(`☕ ${changedBy} started a break!`);
+          if (newCycleCount !== undefined) setCycleCount(newCycleCount);
+          
+          // Play audio when state changes
+          if (prevTimerState !== newTimerState) {
+            if (newTimerState === 'focus') {
+              audio?.focusStart();
+              setTimeout(() => audio?.playSound(AUDIO_FILES.ticking), 500);
+              setSettingsWarning(`🚀 ${changedBy} started a focus session!`);
+            } else if (newTimerState === 'break') {
+              audio?.stopTicking();
+              audio?.shortBreak();
+              setSettingsWarning(`☕ ${changedBy} started a break!`);
+            } else if (newTimerState === 'idle') {
+              audio?.stopTicking();
+              setSettingsWarning(`⏹️ ${changedBy} ended the session`);
+            } else if (newTimerState === 'lostInBreak') {
+              audio?.stopTicking();
+              setSettingsWarning(`⚠️ ${changedBy} lost in break!`);
+            }
+            setTimeout(() => setSettingsWarning(null), 3000);
           }
-          setTimeout(() => setSettingsWarning(null), 3000);
+        }
+      })
+      .on('broadcast', { event: 'timer-tick' }, (payload) => {
+        const { seconds: newSeconds, timerState: newTimerState } = payload.payload as {
+          seconds: number;
+          timerState: TimerState;
+        };
+        // Continuous timer sync for non-creators
+        if (!isGroupCreator) {
+          setSeconds(newSeconds);
+          setTimerState(newTimerState);
         }
       })
       .on('broadcast', { event: 'exam-update' }, () => {
@@ -432,6 +504,32 @@ export default function Home() {
         };
         reloadExams();
       })
+      .on('broadcast', { event: 'group-deleted' }, (payload) => {
+        const { groupName, deletedBy } = payload.payload as {
+          groupName: string;
+          deletedBy: string;
+        };
+        // Group was deleted by creator - redirect all members
+        getAudioManager()?.stopTicking();
+        alert(`The study group "${groupName}" was deleted by ${deletedBy}.`);
+        
+        // Reset all state
+        setCurrentUser(null);
+        setCurrentGroup(null);
+        setIsNameSet(false);
+        setGroupScreen('select');
+        setFriends([]);
+        setAllUsers([]);
+        setMessages([]);
+        setExams([]);
+        setTimerState('idle');
+        setSeconds(DEFAULT_SETTINGS.focusTime * 60);
+        setCurrentStreak(0);
+        setSessionsCompleted(0);
+        setCycleCount(0);
+        setStudyTarget('');
+        setIsGroupCreator(false);
+      })
       .subscribe();
 
     return () => {
@@ -439,7 +537,7 @@ export default function Home() {
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
     };
-  }, [currentUser, userName, timerState]);
+  }, [currentUser, userName, timerState, isGroupCreator]);
 
   const addSystemMessage = useCallback(
     async (text: string) => {
@@ -533,14 +631,33 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [currentGroup, currentUser]);
 
+  // Broadcast timer tick to group members (group creator only)
+  useEffect(() => {
+    if (!currentGroup || !isGroupCreator || timerState === 'idle') return;
+
+    const broadcastTick = async () => {
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'timer-tick',
+        payload: { seconds, timerState },
+      });
+    };
+
+    // Broadcast every second
+    const interval = setInterval(broadcastTick, 1000);
+
+    return () => clearInterval(interval);
+  }, [currentGroup, isGroupCreator, timerState, seconds]);
+
   // Timer logic
   useEffect(() => {
     let interval: NodeJS.Timeout | undefined;
 
-    if (timerState === 'focus' && seconds > 0) {
+    // Only run timer countdown for group creator (others sync via broadcast)
+    if (timerState === 'focus' && seconds > 0 && isGroupCreator) {
       interval = setInterval(() => setSeconds((s) => s - 1), 1000);
-    } else if (timerState === 'focus' && seconds === 0) {
-      // Focus session completed
+    } else if (timerState === 'focus' && seconds === 0 && isGroupCreator) {
+      // Focus session completed (group creator only - broadcasts to others)
       getAudioManager()?.focusComplete();
       setSessionsCompleted((s) => s + 1);
       const newStreak = currentStreak + 1;
@@ -550,20 +667,29 @@ export default function Home() {
       addSystemMessage(`🎉 ${userName} completed focus session #${newCycleCount}!`);
       updateUserStatus('break', newStreak);
       startBreak(newCycleCount);
-    } else if (timerState === 'break' && seconds > 0) {
+    } else if (timerState === 'break' && seconds > 0 && isGroupCreator) {
       interval = setInterval(() => setSeconds((s) => s - 1), 1000);
-    } else if (timerState === 'break' && seconds === 0) {
-      // Break time exceeded
+    } else if (timerState === 'break' && seconds === 0 && isGroupCreator) {
+      // Break time exceeded (group creator only - broadcasts to others)
       getAudioManager()?.stopTicking();
       setTimerState('lostInBreak');
       addSystemMessage(`⚠️ ${userName} lost in break`);
       updateUserStatus('offline');
+      
+      // Broadcast lostInBreak state to group members
+      if (currentGroup) {
+        supabase.channel(`settings-${currentGroup.id}`).send({
+          type: 'broadcast',
+          event: 'timer-sync',
+          payload: { timerState: 'lostInBreak', seconds: 0, cycleCount: cycleCount, changedBy: userName },
+        });
+      }
     }
 
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [timerState, seconds, userName, currentStreak, cycleCount, addSystemMessage, updateUserStatus, settings]);
+  }, [timerState, seconds, userName, currentStreak, cycleCount, addSystemMessage, updateUserStatus, settings, isGroupCreator, currentGroup]);
 
   // Smooth progress animation using requestAnimationFrame
   useEffect(() => {
@@ -806,7 +932,7 @@ export default function Home() {
       await supabase.channel(`settings-${currentGroup.id}`).send({
         type: 'broadcast',
         event: 'timer-sync',
-        payload: { timerState: 'focus', seconds: focusSeconds, changedBy: userName },
+        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: 0, changedBy: userName },
       });
     }
   };
@@ -831,7 +957,7 @@ export default function Home() {
       await supabase.channel(`settings-${currentGroup.id}`).send({
         type: 'broadcast',
         event: 'timer-sync',
-        payload: { timerState: 'break', seconds: breakSeconds, changedBy: userName },
+        payload: { timerState: 'break', seconds: breakSeconds, cycleCount: cycle, changedBy: userName },
       });
     }
   };
@@ -842,11 +968,21 @@ export default function Home() {
     audio?.focusStart();
     // Play ticking sound once after start sound
     setTimeout(() => audio?.playSound(AUDIO_FILES.ticking), 500);
-    setSeconds(settings.focusTime * 60);
+    const focusSeconds = settings.focusTime * 60;
+    setSeconds(focusSeconds);
     setTimerState('focus');
     await updateUserStatus('focus');
     const targetText = studyTarget ? ` on ${studyTarget}` : '';
     await addSystemMessage(`✅ ${userName} is back from break! Starting cycle #${cycleCount + 1}${targetText}`);
+    
+    // Broadcast timer sync to group members
+    if (currentGroup && isGroupCreator) {
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'timer-sync',
+        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: cycleCount, changedBy: userName },
+      });
+    }
   };
 
   const quitSession = async () => {
@@ -856,9 +992,19 @@ export default function Home() {
       setCurrentStreak(0);
       await updateUserStatus('online', 0);
     }
+    const idleSeconds = settings.focusTime * 60;
     setTimerState('idle');
-    setSeconds(settings.focusTime * 60);
+    setSeconds(idleSeconds);
     setCycleCount(0);
+    
+    // Broadcast timer sync to group members
+    if (currentGroup && isGroupCreator) {
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'timer-sync',
+        payload: { timerState: 'idle', seconds: idleSeconds, cycleCount: 0, changedBy: userName },
+      });
+    }
   };
 
   const formatTime = (s: number) => {
@@ -1778,6 +1924,62 @@ export default function Home() {
               >
                 🚪 Leave this Group
               </button>
+              
+              {/* Delete Group button - only for group creator */}
+              {isGroupCreator && (
+                <button
+                  onClick={async () => {
+                    if (!currentUser || !currentGroup) return;
+                    
+                    const confirmed = window.confirm(
+                      `Are you sure you want to delete "${currentGroup.name}"? This will remove all members and cannot be undone.`
+                    );
+                    if (!confirmed) return;
+                    
+                    // Broadcast group deletion to all members
+                    await supabase.channel(`settings-${currentGroup.id}`).send({
+                      type: 'broadcast',
+                      event: 'group-deleted',
+                      payload: { groupName: currentGroup.name, deletedBy: userName },
+                    });
+                    
+                    // Delete all messages in the group
+                    await supabase.from('messages').delete().eq('group_id', currentGroup.id);
+                    
+                    // Delete all exams in the group
+                    await supabase.from('exams').delete().eq('group_id', currentGroup.id);
+                    
+                    // Delete all users in the group
+                    await supabase.from('users').delete().eq('group_id', currentGroup.id);
+                    
+                    // Delete the group itself
+                    await supabase.from('study_groups').delete().eq('id', currentGroup.id);
+                    
+                    // Stop ticking audio if playing
+                    getAudioManager()?.stopTicking();
+                    
+                    // Reset all state
+                    setCurrentUser(null);
+                    setCurrentGroup(null);
+                    setIsNameSet(false);
+                    setGroupScreen('select');
+                    setFriends([]);
+                    setAllUsers([]);
+                    setMessages([]);
+                    setExams([]);
+                    setTimerState('idle');
+                    setSeconds(DEFAULT_SETTINGS.focusTime * 60);
+                    setCurrentStreak(0);
+                    setSessionsCompleted(0);
+                    setCycleCount(0);
+                    setStudyTarget('');
+                    setIsGroupCreator(false);
+                  }}
+                  className="w-full py-2 rounded-lg text-sm bg-red-900 hover:bg-red-800 transition mt-2 border border-red-700"
+                >
+                  🗑️ Delete this Group
+                </button>
+              )}
             </div>
 
             {/* Exam Countdown */}
