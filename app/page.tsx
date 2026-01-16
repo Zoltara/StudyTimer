@@ -432,16 +432,18 @@ export default function Home() {
           settings: TimerSettings;
           changedBy: string;
         };
-        // Only update settings if it's from someone else AND user chose to sync (or is notified anyway)
+        // Only update settings if it's from someone else
         if (changedBy !== userName) {
-          // Only apply settings if synced
-          if (useSyncedTimer || isGroupCreator) {
+          // Only apply settings if non-creator AND using synced timer
+          if (!isGroupCreator && useSyncedTimer) {
             setSettings(newSettings);
             if (timerState === 'idle') {
               setSeconds(newSettings.focusTime * 60);
             }
           }
-          setSettingsWarning(`⚠️ Timer Changed by ${changedBy}${!useSyncedTimer && !isGroupCreator ? ' (you are using own timer)' : ''}`);
+          // Show notification to everyone
+          const suffix = !isGroupCreator && !useSyncedTimer ? ' (you are using own timer)' : '';
+          setSettingsWarning(`⚠️ Timer Changed by ${changedBy}${suffix}`);
           // Auto-hide warning after 5 seconds
           setTimeout(() => setSettingsWarning(null), 5000);
         }
@@ -1691,9 +1693,13 @@ export default function Home() {
                       setTempSettings(settings);
                       setEditingSettings(true);
                     }}
-                    className="w-full py-2 rounded-lg text-sm bg-zinc-800 hover:bg-zinc-700 transition"
+                    className={`w-full py-2 rounded-lg text-sm transition ${
+                      !isGroupCreator && useSyncedTimer
+                        ? 'bg-zinc-800/50 text-zinc-500 cursor-not-allowed'
+                        : 'bg-zinc-800 hover:bg-zinc-700'
+                    }`}
                     disabled={!isGroupCreator && useSyncedTimer}
-                    title={!isGroupCreator && useSyncedTimer ? 'Settings are controlled by the group creator' : ''}
+                    title={!isGroupCreator && useSyncedTimer ? 'Settings are controlled by the group creator. Switch to "Use Own Timer" to change settings.' : ''}
                   >
                     ⚙️ Timer Settings {!isGroupCreator && useSyncedTimer && '(Synced)'}
                   </button>
