@@ -485,27 +485,53 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [currentUser]);
 
-  // Check for inactive users (offline for more than 30 minutes) and mark them offline
+  // Check for inactive users (inactive for more than 30 minutes) and remove them from the group
   useEffect(() => {
-    if (!currentGroup) return;
+    if (!currentGroup || !currentUser) return;
 
     const checkInactiveUsers = async () => {
       const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
       
-      // Mark users as offline if they haven't updated in 30 minutes and are not already offline
-      await supabase
+      // Get inactive users (haven't updated in 30 minutes)
+      const { data: inactiveUsers } = await supabase
         .from('users')
-        .update({ status: 'offline' })
+        .select('id, name')
         .eq('group_id', currentGroup.id)
         .lt('updated_at', thirtyMinutesAgo)
-        .neq('status', 'offline');
+        .neq('id', currentUser.id); // Don't remove current user
+      
+      if (inactiveUsers && inactiveUsers.length > 0) {
+        const inactiveUserIds = inactiveUsers.map(u => u.id);
+        const inactiveUserNames = inactiveUsers.map(u => u.name);
+        
+        // Delete inactive users from the database (removes from group and leaderboard)
+        await supabase.from('users').delete().in('id', inactiveUserIds);
+        
+        // Update local state
+        setFriends(prev => prev.filter(f => !inactiveUserIds.includes(f.id)));
+        setAllUsers(prev => prev.filter(u => !inactiveUserIds.includes(u.id)));
+        
+        // Send system message about removed users
+        for (const name of inactiveUserNames) {
+          await supabase.from('messages').insert({
+            user_id: currentUser.id,
+            user_name: 'System',
+            group_id: currentGroup.id,
+            text: `⏰ ${name} was removed due to 30 minutes of inactivity.`,
+            is_system: true,
+          });
+        }
+      }
     };
+
+    // Initial check
+    checkInactiveUsers();
 
     // Check every minute
     const interval = setInterval(checkInactiveUsers, 60 * 1000);
 
     return () => clearInterval(interval);
-  }, [currentGroup]);
+  }, [currentGroup, currentUser]);
 
   // Timer logic
   useEffect(() => {
