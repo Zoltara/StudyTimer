@@ -288,14 +288,26 @@ export default function Home() {
     // Load exams
     const loadExams = async () => {
       const { data } = await supabase.from('exams').select('*').eq('user_id', currentUser.id);
-      if (data) {
-        setExams(
-          data.map((e: DbExam) => ({
-            id: e.id,
-            name: e.name,
-            date: new Date(e.date),
-          }))
-        );
+      if (data && data.length > 0) {
+        const loadedExams = data.map((e: DbExam) => ({
+          id: e.id,
+          name: e.name,
+          date: new Date(e.date),
+        }));
+        setExams(loadedExams);
+        // Save to localStorage as backup
+        localStorage.setItem(`exams_${currentUser.id}`, JSON.stringify(loadedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
+      } else {
+        // Try loading from localStorage as fallback
+        const stored = localStorage.getItem(`exams_${currentUser.id}`);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            setExams(parsed.map((e: { id: string; name: string; date: string }) => ({ ...e, date: new Date(e.date) })));
+          } catch (e) {
+            console.log('Failed to parse stored exams');
+          }
+        }
       }
     };
 
@@ -607,6 +619,9 @@ export default function Home() {
 
     if (data) {
       setExams((prev) => [...prev, { id: data.id, name: data.name, date: new Date(data.date) }]);
+      // Save to localStorage as backup
+      const updatedExams = [...exams, { id: data.id, name: data.name, date: new Date(data.date) }];
+      localStorage.setItem(`exams_${currentUser.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
     }
 
     setNewExamName('');
@@ -1049,15 +1064,13 @@ export default function Home() {
             <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold">👥 Study Group</h2>
-                {friends.some((f) => f.status === 'offline') && (
-                  <button
-                    onClick={removeOfflineUsers}
-                    className="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-red-600 transition"
-                    title="Remove offline users"
-                  >
-                    🧹 Clean
-                  </button>
-                )}
+                <button
+                  onClick={removeOfflineUsers}
+                  className="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-red-600 transition"
+                  title="Remove offline users"
+                >
+                  🧹 Remove Offline
+                </button>
               </div>
 
               <div className="space-y-2 mb-4">
