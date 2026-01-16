@@ -91,6 +91,7 @@ interface Friend {
   name: string;
   status: 'online' | 'focus' | 'break' | 'offline';
   streak: number;
+  lastSeen?: Date;
 }
 
 interface Exam {
@@ -211,6 +212,9 @@ export default function Home() {
   const [exams, setExams] = useState<Exam[]>([]);
   const [newExamName, setNewExamName] = useState('');
   const [newExamDate, setNewExamDate] = useState('');
+  const [editingExam, setEditingExam] = useState<string | null>(null);
+  const [editExamName, setEditExamName] = useState('');
+  const [editExamDate, setEditExamDate] = useState('');
 
   // Study target state
   const [studyTarget, setStudyTarget] = useState<string>('');
@@ -259,16 +263,24 @@ export default function Home() {
     const loadUsers = async () => {
       const { data } = await supabase.from('users').select('*').order('created_at', { ascending: true });
       if (data && data.length > 0) {
-        setAllUsers(data.filter((u: User) => u.id !== currentUser.id));
+        // Filter out users offline for more than 10 minutes
+        const now = new Date();
+        const activeUsers = data.filter((u: User & { updated_at?: string }) => {
+          if (u.id === currentUser.id) return false;
+          if (u.status !== 'offline') return true;
+          const updatedAt = new Date(u.updated_at || u.created_at);
+          const minutesOffline = (now.getTime() - updatedAt.getTime()) / (1000 * 60);
+          return minutesOffline < 10;
+        });
+        setAllUsers(activeUsers);
         setFriends(
-          data
-            .filter((u: User) => u.id !== currentUser.id)
-            .map((u: User) => ({
-              id: u.id,
-              name: u.name,
-              status: u.status,
-              streak: u.streak,
-            }))
+          activeUsers.map((u: User & { updated_at?: string }) => ({
+            id: u.id,
+            name: u.name,
+            status: u.status,
+            streak: u.streak,
+            lastSeen: new Date(u.updated_at || u.created_at),
+          }))
         );
       }
     };
@@ -463,6 +475,17 @@ export default function Home() {
 
     console.log('Creating user:', userName);
 
+    // Check if name already exists
+    const { data: existingUsers } = await supabase
+      .from('users')
+      .select('id')
+      .ilike('name', userName.trim());
+
+    if (existingUsers && existingUsers.length > 0) {
+      alert('This name is already taken. Please choose a different name.');
+      return;
+    }
+
     const { data, error } = await supabase
       .from('users')
       .insert({ name: userName, status: 'online', streak: 0, sessions_today: 0 })
@@ -588,6 +611,42 @@ export default function Home() {
 
     setNewExamName('');
     setNewExamDate('');
+  };
+
+  const updateExam = async (examId: string) => {
+    if (!editExamName.trim() || !editExamDate || !currentUser) return;
+
+    const { error } = await supabase
+      .from('exams')
+      .update({ name: editExamName, date: editExamDate })
+      .eq('id', examId);
+
+    if (!error) {
+      setExams((prev) =>
+        prev.map((e) =>
+          e.id === examId ? { ...e, name: editExamName, date: new Date(editExamDate) } : e
+        )
+      );
+    }
+
+    setEditingExam(null);
+    setEditExamName('');
+    setEditExamDate('');
+  };
+
+  const deleteExam = async (examId: string) => {
+    await supabase.from('exams').delete().eq('id', examId);
+    setExams((prev) => prev.filter((e) => e.id !== examId));
+  };
+
+  const removeOfflineUsers = async () => {
+    // Remove all offline users from the database
+    const offlineUserIds = friends.filter((f) => f.status === 'offline').map((f) => f.id);
+    if (offlineUserIds.length === 0) return;
+    
+    await supabase.from('users').delete().in('id', offlineUserIds);
+    setFriends((prev) => prev.filter((f) => f.status !== 'offline'));
+    setAllUsers((prev) => prev.filter((u) => !offlineUserIds.includes(u.id)));
   };
 
   const saveSettings = async () => {
@@ -920,7 +979,9 @@ export default function Home() {
                       {index === 2 && '🥉'}
                       {user.name}
                     </span>
-                    <span className="text-emerald-400">{user.streak} 🔥</span>
+                    <span className={user.streak > 0 ? 'text-emerald-400' : 'text-zinc-400'}>
+                      {user.streak} {user.streak > 0 ? '🔥' : '😢'}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -986,7 +1047,18 @@ export default function Home() {
           <div className="lg:col-span-1 space-y-4">
             {/* Friends */}
             <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
-              <h2 className="text-xl font-semibold mb-4">👥 Study Group</h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold">👥 Study Group</h2>
+                {friends.some((f) => f.status === 'offline') && (
+                  <button
+                    onClick={removeOfflineUsers}
+                    className="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-red-600 transition"
+                    title="Remove offline users"
+                  >
+                    🧹 Clean
+                  </button>
+                )}
+              </div>
 
               <div className="space-y-2 mb-4">
                 {friends.length === 0 ? (
@@ -1027,6 +1099,7 @@ export default function Home() {
                     .sort((a, b) => a.date.getTime() - b.date.getTime())
                     .map((exam) => {
                       const daysUntil = getDaysUntil(exam.date);
+                      const isEditing = editingExam === exam.id;
                       return (
                         <div
                           key={exam.id}
@@ -1034,17 +1107,72 @@ export default function Home() {
                             daysUntil <= 3 ? 'bg-red-900/50 border border-red-700' : 'bg-zinc-800'
                           }`}
                         >
-                          <div className="font-semibold">{exam.name}</div>
-                          <div className="text-sm text-zinc-400 flex justify-between">
-                            <span>{exam.date.toLocaleDateString()}</span>
-                            <span
-                              className={`font-semibold ${
-                                daysUntil <= 3 ? 'text-red-400' : daysUntil <= 7 ? 'text-yellow-400' : 'text-emerald-400'
-                              }`}
-                            >
-                              {daysUntil} days
-                            </span>
-                          </div>
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                value={editExamName}
+                                onChange={(e) => setEditExamName(e.target.value)}
+                                className="w-full p-1 rounded bg-zinc-700 border border-zinc-600 text-sm"
+                              />
+                              <input
+                                type="date"
+                                value={editExamDate}
+                                onChange={(e) => setEditExamDate(e.target.value)}
+                                className="w-full p-1 rounded bg-zinc-700 border border-zinc-600 text-sm"
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => updateExam(exam.id)}
+                                  className="flex-1 px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-xs"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  onClick={() => setEditingExam(null)}
+                                  className="flex-1 px-2 py-1 rounded bg-zinc-600 hover:bg-zinc-500 text-xs"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex justify-between items-start">
+                                <div className="font-semibold">{exam.name}</div>
+                                <div className="flex gap-1">
+                                  <button
+                                    onClick={() => {
+                                      setEditingExam(exam.id);
+                                      setEditExamName(exam.name);
+                                      setEditExamDate(exam.date.toISOString().split('T')[0]);
+                                    }}
+                                    className="text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600"
+                                    title="Edit"
+                                  >
+                                    ✏️
+                                  </button>
+                                  <button
+                                    onClick={() => deleteExam(exam.id)}
+                                    className="text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-red-600"
+                                    title="Delete"
+                                  >
+                                    🗑️
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="text-sm text-zinc-400 flex justify-between">
+                                <span>{exam.date.toLocaleDateString()}</span>
+                                <span
+                                  className={`font-semibold ${
+                                    daysUntil <= 3 ? 'text-red-400' : daysUntil <= 7 ? 'text-yellow-400' : 'text-emerald-400'
+                                  }`}
+                                >
+                                  {daysUntil} days
+                                </span>
+                              </div>
+                            </>
+                          )}
                         </div>
                       );
                     })
