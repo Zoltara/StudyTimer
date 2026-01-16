@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase, User, Message as DbMessage, Exam as DbExam } from '../lib/supabase';
+import { supabase, User, Message as DbMessage, Exam as DbExam, StudyGroup, generateGroupCode } from '../lib/supabase';
 
 // Audio file paths
 const AUDIO_FILES = {
@@ -189,6 +189,17 @@ export default function Home() {
   const [currentStreak, setCurrentStreak] = useState(0);
   const [cycleCount, setCycleCount] = useState(0);
 
+  // Group state
+  const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>(null);
+  const [groupScreen, setGroupScreen] = useState<'select' | 'create' | 'join' | 'lobby'>('select');
+  const [groupName, setGroupName] = useState('');
+  const [groupTopic, setGroupTopic] = useState('');
+  const [isPublicGroup, setIsPublicGroup] = useState(true);
+  const [joinCode, setJoinCode] = useState('');
+  const [joinError, setJoinError] = useState('');
+  const [publicGroups, setPublicGroups] = useState<StudyGroup[]>([]);
+  const [showGroupCode, setShowGroupCode] = useState(false);
+
   // Timer settings
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
   const [editingSettings, setEditingSettings] = useState(false);
@@ -237,13 +248,14 @@ export default function Home() {
 
   // Load initial data and set up realtime subscriptions
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !currentGroup) return;
 
-    // Load messages
+    // Load messages for this group
     const loadMessages = async () => {
       const { data } = await supabase
         .from('messages')
         .select('*')
+        .eq('group_id', currentGroup.id)
         .order('created_at', { ascending: false })
         .limit(100);
 
@@ -260,9 +272,13 @@ export default function Home() {
       }
     };
 
-    // Load all users
+    // Load all users in this group
     const loadUsers = async () => {
-      const { data } = await supabase.from('users').select('*').order('created_at', { ascending: true });
+      const { data } = await supabase
+        .from('users')
+        .select('*')
+        .eq('group_id', currentGroup.id)
+        .order('created_at', { ascending: true });
       if (data && data.length > 0) {
         // Filter out users offline for more than 10 minutes
         const now = new Date();
@@ -392,16 +408,17 @@ export default function Home() {
 
   const addSystemMessage = useCallback(
     async (text: string) => {
-      if (!currentUser) return;
+      if (!currentUser || !currentGroup) return;
 
       await supabase.from('messages').insert({
         user_id: currentUser.id,
         user_name: 'System',
+        group_id: currentGroup.id,
         text,
         is_system: true,
       });
     },
-    [currentUser]
+    [currentUser, currentGroup]
   );
 
   const updateUserStatus = useCallback(
@@ -483,15 +500,83 @@ export default function Home() {
     };
   }, [timerState, seconds, settings]);
 
+  // Load public groups on mount
+  useEffect(() => {
+    const loadPublicGroups = async () => {
+      const { data } = await supabase
+        .from('study_groups')
+        .select('*')
+        .eq('is_public', true)
+        .order('created_at', { ascending: false });
+      if (data) {
+        setPublicGroups(data);
+      }
+    };
+    loadPublicGroups();
+    
+    // Refresh every 30 seconds
+    const interval = setInterval(loadPublicGroups, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const createGroup = async () => {
+    if (!groupName.trim() || !groupTopic.trim()) return;
+    
+    const code = generateGroupCode();
+    const { data, error } = await supabase
+      .from('study_groups')
+      .insert({
+        code,
+        name: groupName,
+        topic: groupTopic,
+        created_by: userName,
+        is_public: isPublicGroup,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating group:', error);
+      return;
+    }
+
+    if (data) {
+      setCurrentGroup(data);
+      setGroupScreen('lobby');
+    }
+  };
+
+  const joinGroup = async (code?: string) => {
+    const codeToUse = code || joinCode.trim().toUpperCase();
+    if (!codeToUse) return;
+
+    const { data, error } = await supabase
+      .from('study_groups')
+      .select('*')
+      .eq('code', codeToUse)
+      .single();
+
+    if (error || !data) {
+      setJoinError('Group not found. Please check the code.');
+      return;
+    }
+
+    setCurrentGroup(data);
+    setJoinError('');
+    setGroupScreen('lobby');
+  };
+
   const createUser = async () => {
     if (!userName.trim()) return;
+    if (!currentGroup) return;
 
     console.log('Creating user:', userName);
 
-    // Check if name already exists
+    // Check if name already exists in this group
     const { data: existingUsers } = await supabase
       .from('users')
       .select('id')
+      .eq('group_id', currentGroup.id)
       .ilike('name', userName.trim());
 
     if (existingUsers && existingUsers.length > 0) {
@@ -503,7 +588,13 @@ export default function Home() {
 
     const { data, error } = await supabase
       .from('users')
-      .insert({ name: userName, status: 'online', streak: 0, sessions_today: 0 })
+      .insert({ 
+        name: userName, 
+        group_id: currentGroup.id,
+        status: 'online', 
+        streak: 0, 
+        sessions_today: 0 
+      })
       .select()
       .single();
 
@@ -523,6 +614,7 @@ export default function Home() {
       await supabase.from('messages').insert({
         user_id: data.id,
         user_name: 'System',
+        group_id: currentGroup.id,
         text: `👋 ${userName} joined the study group!`,
         is_system: true,
       });
@@ -595,11 +687,12 @@ export default function Home() {
   };
 
   const sendMessage = async () => {
-    if (!newMessage.trim() || !currentUser) return;
+    if (!newMessage.trim() || !currentUser || !currentGroup) return;
 
     await supabase.from('messages').insert({
       user_id: currentUser.id,
       user_name: userName,
+      group_id: currentGroup.id,
       text: newMessage,
       is_system: false,
     });
@@ -701,6 +794,210 @@ export default function Home() {
     return users.sort((a, b) => b.streak - a.streak);
   };
 
+  const copyGroupCode = () => {
+    if (currentGroup) {
+      navigator.clipboard.writeText(currentGroup.code);
+      setShowGroupCode(true);
+      setTimeout(() => setShowGroupCode(false), 2000);
+    }
+  };
+
+  // Group Selection Screen
+  if (!currentGroup) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white p-4">
+        <h1 className="text-5xl font-bold mb-4 text-emerald-500">StudyTimer</h1>
+        <p className="text-xl text-zinc-400 mb-8">Stay focused with your friends.</p>
+
+        {groupScreen === 'select' && (
+          <div className="w-full max-w-md space-y-4">
+            <button
+              onClick={() => setGroupScreen('create')}
+              className="w-full py-4 rounded-xl font-semibold bg-emerald-600 hover:bg-emerald-700 transition text-lg"
+            >
+              🚀 Create New Group
+            </button>
+            <button
+              onClick={() => setGroupScreen('join')}
+              className="w-full py-4 rounded-xl font-semibold bg-purple-600 hover:bg-purple-700 transition text-lg"
+            >
+              🔗 Join with Code
+            </button>
+
+            {/* Public Groups List */}
+            <div className="mt-8">
+              <h2 className="text-lg font-semibold mb-4 text-zinc-300">🌐 Public Study Groups</h2>
+              {publicGroups.length === 0 ? (
+                <p className="text-zinc-500 text-sm">No public groups available. Create one!</p>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {publicGroups.map((group) => (
+                    <div
+                      key={group.id}
+                      className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 flex justify-between items-center"
+                    >
+                      <div>
+                        <div className="font-semibold">{group.name}</div>
+                        <div className="text-sm text-zinc-400">📚 {group.topic}</div>
+                        <div className="text-xs text-zinc-500">by {group.created_by}</div>
+                      </div>
+                      <button
+                        onClick={() => joinGroup(group.code)}
+                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 transition text-sm"
+                      >
+                        Join
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {groupScreen === 'create' && (
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <button
+              onClick={() => setGroupScreen('select')}
+              className="text-zinc-400 hover:text-white mb-4"
+            >
+              ← Back
+            </button>
+            <h2 className="text-2xl font-bold mb-6">Create New Group</h2>
+            
+            <label className="block text-sm text-zinc-400 mb-2">Group Name</label>
+            <input
+              type="text"
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white mb-4"
+              placeholder="My Study Group"
+            />
+            
+            <label className="block text-sm text-zinc-400 mb-2">Study Topic</label>
+            <input
+              type="text"
+              value={groupTopic}
+              onChange={(e) => setGroupTopic(e.target.value)}
+              className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white mb-4"
+              placeholder="e.g., Math, Programming, Languages..."
+            />
+            
+            <label className="flex items-center gap-3 mb-6 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isPublicGroup}
+                onChange={(e) => setIsPublicGroup(e.target.checked)}
+                className="w-5 h-5 rounded"
+              />
+              <span className="text-zinc-300">Make this group public (visible to others)</span>
+            </label>
+            
+            <button
+              onClick={createGroup}
+              disabled={!groupName.trim() || !groupTopic.trim()}
+              className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Create Group
+            </button>
+          </div>
+        )}
+
+        {groupScreen === 'join' && (
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <button
+              onClick={() => setGroupScreen('select')}
+              className="text-zinc-400 hover:text-white mb-4"
+            >
+              ← Back
+            </button>
+            <h2 className="text-2xl font-bold mb-6">Join a Group</h2>
+            
+            <label className="block text-sm text-zinc-400 mb-2">Enter Group Code</label>
+            <input
+              type="text"
+              value={joinCode}
+              onChange={(e) => {
+                setJoinCode(e.target.value.toUpperCase());
+                setJoinError('');
+              }}
+              onKeyDown={(e) => handleKeyPress(e, () => joinGroup())}
+              className={`w-full p-3 rounded-lg bg-zinc-800 border ${joinError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2 text-center text-2xl tracking-widest`}
+              placeholder="XXXXXX"
+              maxLength={6}
+            />
+            {joinError && (
+              <p className="text-red-400 text-sm mb-2">{joinError}</p>
+            )}
+            
+            <button
+              onClick={() => joinGroup()}
+              disabled={joinCode.length !== 6}
+              className="w-full py-3 rounded-lg font-semibold bg-purple-600 hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed mt-4"
+            >
+              Join Group
+            </button>
+          </div>
+        )}
+
+        {groupScreen === 'lobby' && currentGroup && (
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <div className="text-center mb-6">
+              <h2 className="text-2xl font-bold">{currentGroup.name}</h2>
+              <p className="text-zinc-400">📚 {currentGroup.topic}</p>
+            </div>
+            
+            <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
+              <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
+              <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
+                {currentGroup.code}
+              </div>
+              <button
+                onClick={copyGroupCode}
+                className="text-sm text-zinc-400 hover:text-white"
+              >
+                {showGroupCode ? '✓ Copied!' : '📋 Copy Code'}
+              </button>
+            </div>
+            
+            <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
+            <input
+              type="text"
+              value={userName}
+              onChange={(e) => {
+                setUserName(e.target.value);
+                setNameError('');
+              }}
+              onKeyDown={(e) => handleKeyPress(e, createUser)}
+              className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
+              placeholder="Your name"
+            />
+            {nameError && (
+              <p className="text-red-400 text-sm mb-2">{nameError}</p>
+            )}
+            <button
+              onClick={createUser}
+              disabled={!userName.trim()}
+              className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Join & Start Studying
+            </button>
+            
+            <button
+              onClick={() => {
+                setCurrentGroup(null);
+                setGroupScreen('select');
+              }}
+              className="w-full py-2 text-zinc-400 hover:text-white mt-4 text-sm"
+            >
+              ← Choose Different Group
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (!isNameSet) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white">
@@ -754,7 +1051,20 @@ export default function Home() {
         {/* Header */}
         <div className="text-center mb-6">
           <h1 className="text-4xl font-bold text-emerald-500">StudyTimer</h1>
-          <p className="text-zinc-400">
+          {currentGroup && (
+            <div className="flex items-center justify-center gap-2 mt-2">
+              <span className="text-zinc-400">📚 {currentGroup.name}</span>
+              <span className="text-zinc-600">•</span>
+              <button
+                onClick={copyGroupCode}
+                className="text-emerald-400 hover:text-emerald-300 font-mono"
+                title="Click to copy code"
+              >
+                {showGroupCode ? '✓ Copied!' : `Code: ${currentGroup.code}`}
+              </button>
+            </div>
+          )}
+          <p className="text-zinc-400 mt-1">
             Welcome, {userName}! 🎯 Current Streak: {currentStreak} sessions
           </p>
         </div>
