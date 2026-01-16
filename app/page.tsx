@@ -202,6 +202,7 @@ export default function Home() {
   const [publicGroups, setPublicGroups] = useState<StudyGroup[]>([]);
   const [showGroupCode, setShowGroupCode] = useState(false);
   const [isGroupCreator, setIsGroupCreator] = useState(false);
+  const [useSyncedTimer, setUseSyncedTimer] = useState(true); // Whether non-creators sync with creator's timer
 
   // Timer settings
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
@@ -431,13 +432,16 @@ export default function Home() {
           settings: TimerSettings;
           changedBy: string;
         };
-        // Only update if it's from someone else
+        // Only update settings if it's from someone else AND user chose to sync (or is notified anyway)
         if (changedBy !== userName) {
-          setSettings(newSettings);
-          if (timerState === 'idle') {
-            setSeconds(newSettings.focusTime * 60);
+          // Only apply settings if synced
+          if (useSyncedTimer || isGroupCreator) {
+            setSettings(newSettings);
+            if (timerState === 'idle') {
+              setSeconds(newSettings.focusTime * 60);
+            }
           }
-          setSettingsWarning(`⚠️ Timer Changed by ${changedBy}`);
+          setSettingsWarning(`⚠️ Timer Changed by ${changedBy}${!useSyncedTimer && !isGroupCreator ? ' (you are using own timer)' : ''}`);
           // Auto-hide warning after 5 seconds
           setTimeout(() => setSettingsWarning(null), 5000);
         }
@@ -449,8 +453,8 @@ export default function Home() {
           cycleCount: number;
           changedBy: string;
         };
-        // Sync timer from group creator (only for non-creators)
-        if (changedBy !== userName && !isGroupCreator) {
+        // Sync timer from group creator (only for non-creators who chose to sync)
+        if (changedBy !== userName && !isGroupCreator && useSyncedTimer) {
           const audio = getAudioManager();
           const prevTimerState = timerState;
           
@@ -484,8 +488,8 @@ export default function Home() {
           seconds: number;
           timerState: TimerState;
         };
-        // Continuous timer sync for non-creators
-        if (!isGroupCreator) {
+        // Continuous timer sync for non-creators who chose to sync
+        if (!isGroupCreator && useSyncedTimer) {
           setSeconds(newSeconds);
           setTimerState(newTimerState);
         }
@@ -529,6 +533,7 @@ export default function Home() {
         setCycleCount(0);
         setStudyTarget('');
         setIsGroupCreator(false);
+        setUseSyncedTimer(true);
       })
       .subscribe();
 
@@ -537,7 +542,7 @@ export default function Home() {
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
     };
-  }, [currentUser, userName, timerState, isGroupCreator]);
+  }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer]);
 
   const addSystemMessage = useCallback(
     async (text: string) => {
@@ -653,11 +658,13 @@ export default function Home() {
   useEffect(() => {
     let interval: NodeJS.Timeout | undefined;
 
-    // Only run timer countdown for group creator (others sync via broadcast)
-    if (timerState === 'focus' && seconds > 0 && isGroupCreator) {
+    // Run timer countdown for group creator OR non-creators using their own timer
+    const shouldRunOwnTimer = isGroupCreator || !useSyncedTimer;
+    
+    if (timerState === 'focus' && seconds > 0 && shouldRunOwnTimer) {
       interval = setInterval(() => setSeconds((s) => s - 1), 1000);
-    } else if (timerState === 'focus' && seconds === 0 && isGroupCreator) {
-      // Focus session completed (group creator only - broadcasts to others)
+    } else if (timerState === 'focus' && seconds === 0 && shouldRunOwnTimer) {
+      // Focus session completed
       getAudioManager()?.focusComplete();
       setSessionsCompleted((s) => s + 1);
       const newStreak = currentStreak + 1;
@@ -667,17 +674,17 @@ export default function Home() {
       addSystemMessage(`🎉 ${userName} completed focus session #${newCycleCount}!`);
       updateUserStatus('break', newStreak);
       startBreak(newCycleCount);
-    } else if (timerState === 'break' && seconds > 0 && isGroupCreator) {
+    } else if (timerState === 'break' && seconds > 0 && shouldRunOwnTimer) {
       interval = setInterval(() => setSeconds((s) => s - 1), 1000);
-    } else if (timerState === 'break' && seconds === 0 && isGroupCreator) {
-      // Break time exceeded (group creator only - broadcasts to others)
+    } else if (timerState === 'break' && seconds === 0 && shouldRunOwnTimer) {
+      // Break time exceeded
       getAudioManager()?.stopTicking();
       setTimerState('lostInBreak');
       addSystemMessage(`⚠️ ${userName} lost in break`);
       updateUserStatus('offline');
       
-      // Broadcast lostInBreak state to group members
-      if (currentGroup) {
+      // Broadcast lostInBreak state to group members (only if group creator)
+      if (currentGroup && isGroupCreator) {
         supabase.channel(`settings-${currentGroup.id}`).send({
           type: 'broadcast',
           event: 'timer-sync',
@@ -689,7 +696,7 @@ export default function Home() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [timerState, seconds, userName, currentStreak, cycleCount, addSystemMessage, updateUserStatus, settings, isGroupCreator, currentGroup]);
+  }, [timerState, seconds, userName, currentStreak, cycleCount, addSystemMessage, updateUserStatus, settings, isGroupCreator, currentGroup, useSyncedTimer]);
 
   // Smooth progress animation using requestAnimationFrame
   useEffect(() => {
@@ -790,6 +797,7 @@ export default function Home() {
 
     setCurrentGroup(data);
     setIsGroupCreator(false);
+    setUseSyncedTimer(true);
     setJoinError('');
     setGroupScreen('lobby');
   };
@@ -1637,6 +1645,44 @@ export default function Home() {
                 Sessions completed today: {sessionsCompleted}
               </div>
 
+              {/* Timer Sync Toggle - for non-creators only */}
+              {!isGroupCreator && (
+                <div className="mt-4 pt-4 border-t border-zinc-800">
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-800">
+                    <div>
+                      <div className="text-sm font-medium">
+                        {useSyncedTimer ? '🔗 Synced with Creator' : '⏱️ Using Own Timer'}
+                      </div>
+                      <div className="text-xs text-zinc-400">
+                        {useSyncedTimer 
+                          ? `Timer controlled by ${currentGroup?.created_by || 'group creator'}`
+                          : 'You control your own timer independently'
+                        }
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (!useSyncedTimer) {
+                          // Switching to synced - reset to idle and wait for creator's sync
+                          setTimerState('idle');
+                          setSeconds(settings.focusTime * 60);
+                          setCycleCount(0);
+                          getAudioManager()?.stopTicking();
+                        }
+                        setUseSyncedTimer(!useSyncedTimer);
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                        useSyncedTimer
+                          ? 'bg-emerald-600 hover:bg-emerald-700'
+                          : 'bg-purple-600 hover:bg-purple-700'
+                      }`}
+                    >
+                      {useSyncedTimer ? 'Use Own Timer' : 'Sync with Creator'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Timer Settings */}
               <div className="mt-4 pt-4 border-t border-zinc-800">
                 {!editingSettings ? (
@@ -1646,8 +1692,10 @@ export default function Home() {
                       setEditingSettings(true);
                     }}
                     className="w-full py-2 rounded-lg text-sm bg-zinc-800 hover:bg-zinc-700 transition"
+                    disabled={!isGroupCreator && useSyncedTimer}
+                    title={!isGroupCreator && useSyncedTimer ? 'Settings are controlled by the group creator' : ''}
                   >
-                    ⚙️ Timer Settings
+                    ⚙️ Timer Settings {!isGroupCreator && useSyncedTimer && '(Synced)'}
                   </button>
                 ) : (
                   <div className="space-y-3">
@@ -1919,6 +1967,7 @@ export default function Home() {
                   setCycleCount(0);
                   setStudyTarget('');
                   setIsGroupCreator(false);
+                  setUseSyncedTimer(true);
                 }}
                 className="w-full py-2 rounded-lg text-sm bg-red-600 hover:bg-red-700 transition mt-2"
               >
@@ -1974,6 +2023,7 @@ export default function Home() {
                     setCycleCount(0);
                     setStudyTarget('');
                     setIsGroupCreator(false);
+                    setUseSyncedTimer(true);
                   }}
                   className="w-full py-2 rounded-lg text-sm bg-red-900 hover:bg-red-800 transition mt-2 border border-red-700"
                 >
