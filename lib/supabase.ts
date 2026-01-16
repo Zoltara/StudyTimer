@@ -39,6 +39,7 @@ export type Message = {
 export type Exam = {
   id: string;
   user_id: string;
+  group_id: string | null;
   name: string;
   date: string;
   created_at: string;

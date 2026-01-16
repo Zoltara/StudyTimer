@@ -199,6 +199,7 @@ export default function Home() {
   const [joinError, setJoinError] = useState('');
   const [publicGroups, setPublicGroups] = useState<StudyGroup[]>([]);
   const [showGroupCode, setShowGroupCode] = useState(false);
+  const [isGroupCreator, setIsGroupCreator] = useState(false);
 
   // Timer settings
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
@@ -302,9 +303,9 @@ export default function Home() {
       }
     };
 
-    // Load exams
+    // Load exams for this group
     const loadExams = async () => {
-      const { data } = await supabase.from('exams').select('*').eq('user_id', currentUser.id);
+      const { data } = await supabase.from('exams').select('*').eq('group_id', currentGroup.id);
       if (data && data.length > 0) {
         const loadedExams = data.map((e: DbExam) => ({
           id: e.id,
@@ -313,10 +314,10 @@ export default function Home() {
         }));
         setExams(loadedExams);
         // Save to localStorage as backup
-        localStorage.setItem(`exams_${currentUser.id}`, JSON.stringify(loadedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
+        localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(loadedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
       } else {
         // Try loading from localStorage as fallback
-        const stored = localStorage.getItem(`exams_${currentUser.id}`);
+        const stored = localStorage.getItem(`exams_${currentGroup.id}`);
         if (stored) {
           try {
             const parsed = JSON.parse(stored);
@@ -378,9 +379,9 @@ export default function Home() {
       )
       .subscribe();
 
-    // Subscribe to timer settings changes (broadcast)
+    // Subscribe to timer settings and state changes (broadcast)
     const settingsChannel = supabase
-      .channel('settings-channel')
+      .channel(`settings-${currentGroup.id}`)
       .on('broadcast', { event: 'settings-change' }, (payload) => {
         const { settings: newSettings, changedBy } = payload.payload as {
           settings: TimerSettings;
@@ -396,6 +397,38 @@ export default function Home() {
           // Auto-hide warning after 5 seconds
           setTimeout(() => setSettingsWarning(null), 5000);
         }
+      })
+      .on('broadcast', { event: 'timer-sync' }, (payload) => {
+        const { timerState: newTimerState, seconds: newSeconds, changedBy } = payload.payload as {
+          timerState: TimerState;
+          seconds: number;
+          changedBy: string;
+        };
+        // Sync timer from group creator
+        if (changedBy !== userName) {
+          setTimerState(newTimerState);
+          setSeconds(newSeconds);
+          if (newTimerState === 'focus') {
+            setSettingsWarning(`🚀 ${changedBy} started a focus session!`);
+          } else if (newTimerState === 'break') {
+            setSettingsWarning(`☕ ${changedBy} started a break!`);
+          }
+          setTimeout(() => setSettingsWarning(null), 3000);
+        }
+      })
+      .on('broadcast', { event: 'exam-update' }, () => {
+        // Reload exams when someone adds/updates/deletes one
+        const reloadExams = async () => {
+          const { data } = await supabase.from('exams').select('*').eq('group_id', currentGroup.id);
+          if (data) {
+            setExams(data.map((e: DbExam) => ({
+              id: e.id,
+              name: e.name,
+              date: new Date(e.date),
+            })));
+          }
+        };
+        reloadExams();
       })
       .subscribe();
 
@@ -542,6 +575,7 @@ export default function Home() {
 
     if (data) {
       setCurrentGroup(data);
+      setIsGroupCreator(true);
       setGroupScreen('lobby');
     }
   };
@@ -562,6 +596,7 @@ export default function Home() {
     }
 
     setCurrentGroup(data);
+    setIsGroupCreator(false);
     setJoinError('');
     setGroupScreen('lobby');
   };
@@ -633,14 +668,24 @@ export default function Home() {
     audio?.focusStart();
     // Play ticking sound once after start sound
     setTimeout(() => audio?.playSound(AUDIO_FILES.ticking), 500);
-    setSeconds(settings.focusTime * 60);
+    const focusSeconds = settings.focusTime * 60;
+    setSeconds(focusSeconds);
     setTimerState('focus');
     await updateUserStatus('focus');
     const targetText = studyTarget ? ` on ${studyTarget}` : '';
     await addSystemMessage(`🎯 ${userName} started focusing${targetText}!`);
+    
+    // Broadcast timer sync to group members
+    if (currentGroup && isGroupCreator) {
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'timer-sync',
+        payload: { timerState: 'focus', seconds: focusSeconds, changedBy: userName },
+      });
+    }
   };
 
-  const startBreak = (cycle: number) => {
+  const startBreak = async (cycle: number) => {
     const audio = getAudioManager();
     const isLongBreak = cycle > 0 && cycle % settings.cyclesBeforeLongBreak === 0;
     if (isLongBreak) {
@@ -649,10 +694,20 @@ export default function Home() {
       audio?.shortBreak();
     }
     const breakTime = isLongBreak ? settings.longBreakTime : settings.shortBreakTime;
-    setSeconds(breakTime * 60);
+    const breakSeconds = breakTime * 60;
+    setSeconds(breakSeconds);
     setTimerState('break');
     const breakType = isLongBreak ? 'long break' : 'short break';
     addSystemMessage(`☕ ${userName} on a ${breakType} (${breakTime} min)`);
+    
+    // Broadcast timer sync to group members
+    if (currentGroup && isGroupCreator) {
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'timer-sync',
+        payload: { timerState: 'break', seconds: breakSeconds, changedBy: userName },
+      });
+    }
   };
 
   const backFromBreak = async () => {
@@ -701,12 +756,13 @@ export default function Home() {
   };
 
   const addExam = async () => {
-    if (!newExamName.trim() || !newExamDate || !currentUser) return;
+    if (!newExamName.trim() || !newExamDate || !currentUser || !currentGroup) return;
 
     const { data } = await supabase
       .from('exams')
       .insert({
         user_id: currentUser.id,
+        group_id: currentGroup.id,
         name: newExamName,
         date: newExamDate,
       })
@@ -717,7 +773,14 @@ export default function Home() {
       setExams((prev) => [...prev, { id: data.id, name: data.name, date: new Date(data.date) }]);
       // Save to localStorage as backup
       const updatedExams = [...exams, { id: data.id, name: data.name, date: new Date(data.date) }];
-      localStorage.setItem(`exams_${currentUser.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
+      localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
+      
+      // Broadcast exam update to group
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'exam-update',
+        payload: {},
+      });
     }
 
     setNewExamName('');
@@ -725,7 +788,7 @@ export default function Home() {
   };
 
   const updateExam = async (examId: string) => {
-    if (!editExamName.trim() || !editExamDate || !currentUser) return;
+    if (!editExamName.trim() || !editExamDate || !currentUser || !currentGroup) return;
 
     const { error } = await supabase
       .from('exams')
@@ -738,6 +801,13 @@ export default function Home() {
           e.id === examId ? { ...e, name: editExamName, date: new Date(editExamDate) } : e
         )
       );
+      
+      // Broadcast exam update to group
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'exam-update',
+        payload: {},
+      });
     }
 
     setEditingExam(null);
@@ -748,6 +818,15 @@ export default function Home() {
   const deleteExam = async (examId: string) => {
     await supabase.from('exams').delete().eq('id', examId);
     setExams((prev) => prev.filter((e) => e.id !== examId));
+    
+    // Broadcast exam update to group
+    if (currentGroup) {
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'exam-update',
+        payload: {},
+      });
+    }
   };
 
   const removeOfflineUsers = async () => {
@@ -765,15 +844,17 @@ export default function Home() {
     setSeconds(tempSettings.focusTime * 60);
     setEditingSettings(false);
 
-    // Broadcast settings change to all users
-    await supabase.channel('settings-channel').send({
-      type: 'broadcast',
-      event: 'settings-change',
-      payload: {
-        settings: tempSettings,
-        changedBy: userName,
-      },
-    });
+    // Broadcast settings change to all users in the group
+    if (currentGroup) {
+      await supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'settings-change',
+        payload: {
+          settings: tempSettings,
+          changedBy: userName,
+        },
+      });
+    }
 
     await addSystemMessage(
       `⚙️ Timer Changed by ${userName}: ${tempSettings.focusTime}min focus, ${tempSettings.shortBreakTime}min short break, ${tempSettings.longBreakTime}min long break after ${tempSettings.cyclesBeforeLongBreak} cycles`
@@ -945,6 +1026,9 @@ export default function Home() {
             <div className="text-center mb-6">
               <h2 className="text-2xl font-bold">{currentGroup.name}</h2>
               <p className="text-zinc-400">📚 {currentGroup.topic}</p>
+              {isGroupCreator && (
+                <span className="inline-block mt-2 px-2 py-1 rounded bg-emerald-600 text-xs">👑 Group Creator</span>
+              )}
             </div>
             
             <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
@@ -952,6 +1036,19 @@ export default function Home() {
               <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
                 {currentGroup.code}
               </div>
+              
+              {/* QR Code */}
+              <div className="my-4">
+                <img
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentGroup.code)}&bgcolor=27272a&color=10b981`}
+                  alt="QR Code"
+                  className="mx-auto rounded-lg"
+                  width={150}
+                  height={150}
+                />
+                <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
+              </div>
+              
               <button
                 onClick={copyGroupCode}
                 className="text-sm text-zinc-400 hover:text-white"
