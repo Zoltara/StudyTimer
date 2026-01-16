@@ -242,6 +242,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [chatSoundEnabled, setChatSoundEnabled] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Friends state
   const [friends, setFriends] = useState<Friend[]>([]);
@@ -273,6 +274,11 @@ export default function Home() {
   // Use smoothProgress for continuous animation, seconds for display
   const progress = timerState === 'idle' ? 1 : smoothProgress;
 
+  // Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   // Load initial data and set up realtime subscriptions
   useEffect(() => {
     if (!currentUser || !currentGroup) return;
@@ -283,7 +289,7 @@ export default function Home() {
         .from('messages')
         .select('*')
         .eq('group_id', currentGroup.id)
-        .order('created_at', { ascending: false })
+        .order('created_at', { ascending: true })
         .limit(100);
 
       if (data) {
@@ -530,12 +536,14 @@ export default function Home() {
         }
       })
       .on('broadcast', { event: 'timer-tick' }, (payload) => {
+        console.log('[timer-tick] received:', payload.payload, 'isGroupCreator:', isGroupCreatorRef.current, 'useSyncedTimer:', useSyncedTimerRef.current);
         const { seconds: newSeconds, timerState: newTimerState } = payload.payload as {
           seconds: number;
           timerState: TimerState;
         };
         // Continuous timer sync for non-creators who chose to sync
         if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
+          console.log('[timer-tick] Applying:', { newSeconds, newTimerState });
           setSeconds(newSeconds);
           setTimerState(newTimerState);
         }
@@ -2016,8 +2024,8 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-96 flex flex-col-reverse">
-                {[...messages].reverse().map((msg) => (
+              <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-96">
+                {messages.map((msg) => (
                   <div
                     key={msg.id}
                     className={`p-2 rounded-lg ${
@@ -2032,6 +2040,7 @@ export default function Home() {
                     {msg.text}
                   </div>
                 ))}
+                <div ref={messagesEndRef} />
               </div>
 
               <div className="flex gap-2">
