@@ -821,7 +821,6 @@ export default function Home() {
     if (!groupName.trim() || !groupTopic.trim()) return;
     
     const code = generateGroupCode();
-    const now = new Date().toISOString();
     const { data, error } = await supabase
       .from('study_groups')
       .insert({
@@ -830,8 +829,6 @@ export default function Home() {
         topic: groupTopic,
         created_by: userName,
         is_public: isPublicGroup,
-        created_at: now,
-        updated_at: now,
       })
       .select()
       .single();
