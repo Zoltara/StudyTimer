@@ -1119,11 +1119,30 @@ export default function Home() {
               
               <button
                 onClick={async () => {
-                  // Delete all users to start fresh
+                  // Delete all other users (keep current user)
                   await supabase.from('users').delete().neq('id', currentUser?.id || '');
                   setFriends([]);
                   setAllUsers([]);
-                  await addSystemMessage(`🌟 ${userName} started a new study session!`);
+                  
+                  // Clear all messages (chat)
+                  await supabase.from('messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+                  setMessages([]);
+                  
+                  // Reset current user's streak (leaderboard)
+                  setCurrentStreak(0);
+                  setSessionsCompleted(0);
+                  setCycleCount(0);
+                  if (currentUser) {
+                    await supabase.from('users').update({ streak: 0, sessions_today: 0 }).eq('id', currentUser.id);
+                  }
+                  
+                  // Add welcome message for new session
+                  await supabase.from('messages').insert({
+                    user_id: currentUser?.id,
+                    user_name: 'System',
+                    text: `🌟 ${userName} started a new study session!`,
+                    is_system: true,
+                  });
                 }}
                 className="w-full py-2 rounded-lg text-sm bg-purple-600 hover:bg-purple-700 transition"
               >
