@@ -215,6 +215,24 @@ export default function Home() {
   const lastTickRef = useRef<number>(Date.now());
   const animationFrameRef = useRef<number | null>(null);
 
+  // Refs for values used in channel handlers (to avoid stale closures)
+  const timerStateRef = useRef<TimerState>(timerState);
+  const secondsRef = useRef<number>(seconds);
+  const cycleCountRef = useRef<number>(cycleCount);
+  const settingsRef = useRef<TimerSettings>(settings);
+  const isGroupCreatorRef = useRef<boolean>(isGroupCreator);
+  const useSyncedTimerRef = useRef<boolean>(useSyncedTimer);
+  const userNameRef = useRef<string>(userName);
+
+  // Keep refs in sync with state
+  useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
+  useEffect(() => { secondsRef.current = seconds; }, [seconds]);
+  useEffect(() => { cycleCountRef.current = cycleCount; }, [cycleCount]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { isGroupCreatorRef.current = isGroupCreator; }, [isGroupCreator]);
+  useEffect(() => { useSyncedTimerRef.current = useSyncedTimer; }, [useSyncedTimer]);
+  useEffect(() => { userNameRef.current = userName; }, [userName]);
+
   // Chat state
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -433,16 +451,16 @@ export default function Home() {
           changedBy: string;
         };
         // Only update settings if it's from someone else
-        if (changedBy !== userName) {
+        if (changedBy !== userNameRef.current) {
           // Only apply settings if non-creator AND using synced timer
-          if (!isGroupCreator && useSyncedTimer) {
+          if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
             setSettings(newSettings);
-            if (timerState === 'idle') {
+            if (timerStateRef.current === 'idle') {
               setSeconds(newSettings.focusTime * 60);
             }
           }
           // Show notification to everyone
-          const suffix = !isGroupCreator && !useSyncedTimer ? ' (you are using own timer)' : '';
+          const suffix = !isGroupCreatorRef.current && !useSyncedTimerRef.current ? ' (you are using own timer)' : '';
           setSettingsWarning(`⚠️ Timer Changed by ${changedBy}${suffix}`);
           // Auto-hide warning after 5 seconds
           setTimeout(() => setSettingsWarning(null), 5000);
@@ -456,9 +474,9 @@ export default function Home() {
           changedBy: string;
         };
         // Sync timer from group creator (only for non-creators who chose to sync)
-        if (changedBy !== userName && !isGroupCreator && useSyncedTimer) {
+        if (changedBy !== userNameRef.current && !isGroupCreatorRef.current && useSyncedTimerRef.current) {
           const audio = getAudioManager();
-          const prevTimerState = timerState;
+          const prevTimerState = timerStateRef.current;
           
           setTimerState(newTimerState);
           setSeconds(newSeconds);
@@ -491,7 +509,7 @@ export default function Home() {
           timerState: TimerState;
         };
         // Continuous timer sync for non-creators who chose to sync
-        if (!isGroupCreator && useSyncedTimer) {
+        if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
           setSeconds(newSeconds);
           setTimerState(newTimerState);
         }
@@ -513,17 +531,17 @@ export default function Home() {
       .on('broadcast', { event: 'timer-request' }, (payload) => {
         const { requestedBy } = payload.payload as { requestedBy: string };
         // Only the creator responds to timer requests
-        if (isGroupCreator && requestedBy !== userName) {
+        if (isGroupCreatorRef.current && requestedBy !== userNameRef.current) {
           // Send current timer state to the new user
           supabase.channel(`settings-${currentGroup.id}`).send({
             type: 'broadcast',
             event: 'timer-response',
             payload: {
-              timerState,
-              seconds,
-              cycleCount,
-              settings,
-              respondedBy: userName,
+              timerState: timerStateRef.current,
+              seconds: secondsRef.current,
+              cycleCount: cycleCountRef.current,
+              settings: settingsRef.current,
+              respondedBy: userNameRef.current,
             },
           });
         }
@@ -537,7 +555,7 @@ export default function Home() {
           respondedBy: string;
         };
         // Only non-creators who use synced timer should apply this
-        if (!isGroupCreator && useSyncedTimer) {
+        if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
           setTimerState(newTimerState);
           setSeconds(newSeconds);
           setCycleCount(newCycleCount);
@@ -584,7 +602,23 @@ export default function Home() {
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
     };
-  }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer]);
+  }, [currentUser, currentGroup, chatSoundEnabled]);
+
+  // Request timer state when joining as non-creator
+  useEffect(() => {
+    if (!currentUser || !currentGroup || isGroupCreator) return;
+    
+    // Small delay to ensure channel is subscribed
+    const timeoutId = setTimeout(() => {
+      supabase.channel(`settings-${currentGroup.id}`).send({
+        type: 'broadcast',
+        event: 'timer-request',
+        payload: { requestedBy: userName },
+      });
+    }, 1000);
+    
+    return () => clearTimeout(timeoutId);
+  }, [currentUser, currentGroup, isGroupCreator, userName]);
 
   const addSystemMessage = useCallback(
     async (text: string) => {
@@ -974,17 +1008,6 @@ export default function Home() {
         text: `👋 ${userName} joined the study group!`,
         is_system: true,
       });
-
-      // Request timer state from creator (if not the creator)
-      if (!isGroupCreator) {
-        setTimeout(() => {
-          supabase.channel(`settings-${currentGroup.id}`).send({
-            type: 'broadcast',
-            event: 'timer-request',
-            payload: { requestedBy: userName },
-          });
-        }, 500); // Small delay to ensure channel is ready
-      }
     }
   };
 
@@ -1025,17 +1048,6 @@ export default function Home() {
       text: `👋 ${userName} is back!`,
       is_system: true,
     });
-
-    // Request timer state from creator (if not the creator)
-    if (!isGroupCreator) {
-      setTimeout(() => {
-        supabase.channel(`settings-${currentGroup.id}`).send({
-          type: 'broadcast',
-          event: 'timer-request',
-          payload: { requestedBy: userName },
-        });
-      }, 500); // Small delay to ensure channel is ready
-    }
   };
 
   const rejectExistingUser = () => {
