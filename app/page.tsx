@@ -182,6 +182,8 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userName, setUserName] = useState('');
   const [nameError, setNameError] = useState('');
+  const [existingUserId, setExistingUserId] = useState<string | null>(null);
+  const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [isNameSet, setIsNameSet] = useState(false);
   const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
   const [timerState, setTimerState] = useState<TimerState>('idle');
@@ -610,16 +612,25 @@ export default function Home() {
     // Check if name already exists in this group
     const { data: existingUsers } = await supabase
       .from('users')
-      .select('id')
+      .select('*')
       .eq('group_id', currentGroup.id)
       .ilike('name', userName.trim());
 
     if (existingUsers && existingUsers.length > 0) {
-      setNameError('This user already exists, please select another name.');
+      // Show confirmation dialog
+      setExistingUserId(existingUsers[0].id);
+      setShowNameConfirm(true);
       return;
     }
 
+    await createNewUser();
+  };
+
+  const createNewUser = async () => {
+    if (!userName.trim() || !currentGroup) return;
+    
     setNameError('');
+    setShowNameConfirm(false);
 
     const { data, error } = await supabase
       .from('users')
@@ -654,6 +665,46 @@ export default function Home() {
         is_system: true,
       });
     }
+  };
+
+  const joinAsExistingUser = async () => {
+    if (!existingUserId || !currentGroup) return;
+
+    // Get the existing user data
+    const { data: existingUser, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', existingUserId)
+      .single();
+
+    if (error || !existingUser) {
+      setNameError('Could not find user. Please try again.');
+      setShowNameConfirm(false);
+      return;
+    }
+
+    // Update user status to online
+    await supabase.from('users').update({ status: 'online' }).eq('id', existingUserId);
+
+    setCurrentUser({ ...existingUser, status: 'online' });
+    setCurrentStreak(existingUser.streak || 0);
+    setIsNameSet(true);
+    setShowNameConfirm(false);
+
+    // Send welcome back message
+    await supabase.from('messages').insert({
+      user_id: existingUserId,
+      user_name: 'System',
+      group_id: currentGroup.id,
+      text: `👋 ${userName} is back!`,
+      is_system: true,
+    });
+  };
+
+  const rejectExistingUser = () => {
+    setShowNameConfirm(false);
+    setExistingUserId(null);
+    setNameError('Please select another name.');
   };
 
   const handleKeyPress = (e: React.KeyboardEvent, action: () => void) => {
@@ -1064,6 +1115,7 @@ export default function Home() {
               onChange={(e) => {
                 setUserName(e.target.value);
                 setNameError('');
+                setShowNameConfirm(false);
               }}
               onKeyDown={(e) => handleKeyPress(e, createUser)}
               className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
@@ -1072,13 +1124,39 @@ export default function Home() {
             {nameError && (
               <p className="text-red-400 text-sm mb-2">{nameError}</p>
             )}
-            <button
-              onClick={createUser}
-              disabled={!userName.trim()}
-              className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Join & Start Studying
-            </button>
+            
+            {/* Name confirmation dialog */}
+            {showNameConfirm && (
+              <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
+                <p className="text-yellow-200 mb-3">
+                  <strong>{userName}</strong> already exists in this group. Is that you?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={joinAsExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                  >
+                    Yes, that's me!
+                  </button>
+                  <button
+                    onClick={rejectExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-zinc-600 hover:bg-zinc-500 transition"
+                  >
+                    No, it's not me
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {!showNameConfirm && (
+              <button
+                onClick={createUser}
+                disabled={!userName.trim()}
+                className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Join & Start Studying
+              </button>
+            )}
             
             <button
               onClick={() => {
