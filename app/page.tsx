@@ -359,6 +359,12 @@ export default function Home() {
     loadUsers();
     loadExams();
 
+    // Poll for updates every 3 seconds as a fallback (realtime might not work in all cases)
+    const pollInterval = setInterval(() => {
+      loadMessages();
+      loadUsers();
+    }, 3000);
+
     // Subscribe to new messages for this group
     const messagesChannel = supabase
       .channel(`messages-${currentGroup.id}`)
@@ -366,6 +372,7 @@ export default function Home() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
+          console.log('[messages] New message received:', payload);
           const m = payload.new as DbMessage;
           // Only process messages for this group
           if (m.group_id !== currentGroup.id) return;
@@ -390,7 +397,9 @@ export default function Home() {
           });
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[messagesChannel] subscribe status:', status);
+      });
 
     // Subscribe to user status changes for this group
     const usersChannel = supabase
@@ -399,6 +408,7 @@ export default function Home() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
+          console.log('[users] User updated:', payload);
           const u = payload.new as User;
           if (u.id !== currentUser.id && u.group_id === currentGroup.id) {
             setFriends((prev) =>
@@ -414,6 +424,7 @@ export default function Home() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
+          console.log('[users] New user joined:', payload);
           const u = payload.new as User;
           if (u.id !== currentUser.id && u.group_id === currentGroup.id) {
             // Add new user to friends list
@@ -438,6 +449,7 @@ export default function Home() {
         'postgres_changes',
         { event: 'DELETE', schema: 'public', table: 'users' },
         (payload) => {
+          console.log('[users] User deleted:', payload);
           const deletedId = payload.old?.id;
           if (deletedId) {
             setFriends((prev) => prev.filter(f => f.id !== deletedId));
@@ -445,7 +457,9 @@ export default function Home() {
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[usersChannel] subscribe status:', status);
+      });
 
     // Subscribe to timer settings and state changes (broadcast)
     const settingsChannel = supabase
@@ -624,6 +638,7 @@ export default function Home() {
       });
 
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
