@@ -181,6 +181,7 @@ function CircularProgress({
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userName, setUserName] = useState('');
+  const [nameError, setNameError] = useState('');
   const [isNameSet, setIsNameSet] = useState(false);
   const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
   const [timerState, setTimerState] = useState<TimerState>('idle');
@@ -494,9 +495,11 @@ export default function Home() {
       .ilike('name', userName.trim());
 
     if (existingUsers && existingUsers.length > 0) {
-      alert('This name is already taken. Please choose a different name.');
+      setNameError('This user already exists, please select another name.');
       return;
     }
+
+    setNameError('');
 
     const { data, error } = await supabase
       .from('users')
@@ -708,11 +711,17 @@ export default function Home() {
           <input
             type="text"
             value={userName}
-            onChange={(e) => setUserName(e.target.value)}
+            onChange={(e) => {
+              setUserName(e.target.value);
+              setNameError('');
+            }}
             onKeyDown={(e) => handleKeyPress(e, createUser)}
-            className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white mb-4"
+            className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
             placeholder="Your name"
           />
+          {nameError && (
+            <p className="text-red-400 text-sm mb-2">{nameError}</p>
+          )}
           <button
             onClick={createUser}
             className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
@@ -1062,7 +1071,7 @@ export default function Home() {
           <div className="lg:col-span-1 space-y-4">
             {/* Friends */}
             <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-2">
                 <h2 className="text-xl font-semibold">👥 Study Group</h2>
                 <button
                   onClick={removeOfflineUsers}
@@ -1072,12 +1081,21 @@ export default function Home() {
                   🧹 Remove Offline
                 </button>
               </div>
+              
+              <p className="text-sm text-zinc-400 mb-4">
+                {friends.filter(f => f.status !== 'offline').length + 1} active user{friends.filter(f => f.status !== 'offline').length !== 0 ? 's' : ''}
+              </p>
 
               <div className="space-y-2 mb-4">
                 {friends.length === 0 ? (
                   <p className="text-zinc-500 text-sm">No one else is here yet...</p>
                 ) : (
-                  friends.map((friend) => (
+                  [...friends]
+                    .sort((a, b) => {
+                      const order = { focus: 0, break: 1, online: 2, offline: 3 };
+                      return order[a.status] - order[b.status];
+                    })
+                    .map((friend) => (
                     <div key={friend.id} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
                       <span className="flex items-center gap-2">
                         <span
@@ -1098,6 +1116,19 @@ export default function Home() {
                   ))
                 )}
               </div>
+              
+              <button
+                onClick={async () => {
+                  // Delete all users to start fresh
+                  await supabase.from('users').delete().neq('id', currentUser?.id || '');
+                  setFriends([]);
+                  setAllUsers([]);
+                  await addSystemMessage(`🌟 ${userName} started a new study session!`);
+                }}
+                className="w-full py-2 rounded-lg text-sm bg-purple-600 hover:bg-purple-700 transition"
+              >
+                🚀 Start a New Session
+              </button>
             </div>
 
             {/* Exam Countdown */}
