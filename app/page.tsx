@@ -830,6 +830,7 @@ export default function Home() {
         topic: groupTopic,
         created_by: userName,
         is_public: isPublicGroup,
+        created_at: now,
         updated_at: now,
       })
       .select()
@@ -837,6 +838,7 @@ export default function Home() {
 
     if (error) {
       console.error('Error creating group:', error);
+      alert('Failed to create group: ' + error.message);
       return;
     }
 
