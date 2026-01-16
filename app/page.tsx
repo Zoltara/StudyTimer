@@ -573,12 +573,16 @@ export default function Home() {
     [currentUser]
   );
 
-  // Heartbeat to track user activity - updates every 5 minutes
+  // Heartbeat to track user and group activity - updates every 5 minutes
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !currentGroup) return;
 
     const heartbeat = async () => {
-      await supabase.from('users').update({ updated_at: new Date().toISOString() }).eq('id', currentUser.id);
+      const now = new Date().toISOString();
+      // Update user activity
+      await supabase.from('users').update({ updated_at: now }).eq('id', currentUser.id);
+      // Update group activity
+      await supabase.from('study_groups').update({ updated_at: now }).eq('id', currentGroup.id);
     };
 
     // Initial heartbeat
@@ -588,7 +592,66 @@ export default function Home() {
     const interval = setInterval(heartbeat, 5 * 60 * 1000);
 
     return () => clearInterval(interval);
-  }, [currentUser]);
+  }, [currentUser, currentGroup]);
+
+  // Check and delete inactive groups (no activity for 30 minutes)
+  useEffect(() => {
+    const checkInactiveGroups = async () => {
+      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      
+      // Get inactive groups (exclude current user's group from deletion, but check if it exists)
+      const { data: inactiveGroups } = await supabase
+        .from('study_groups')
+        .select('id, name')
+        .lt('updated_at', thirtyMinutesAgo);
+      
+      if (inactiveGroups && inactiveGroups.length > 0) {
+        for (const group of inactiveGroups) {
+          // Check if this is the current user's group
+          if (currentGroup && group.id === currentGroup.id) {
+            // Current group is inactive - redirect user
+            getAudioManager()?.stopTicking();
+            alert(`The study group "${group.name}" was deleted due to 30 minutes of inactivity.`);
+            
+            // Reset all state
+            setCurrentUser(null);
+            setCurrentGroup(null);
+            setIsNameSet(false);
+            setGroupScreen('select');
+            setFriends([]);
+            setAllUsers([]);
+            setMessages([]);
+            setExams([]);
+            setTimerState('idle');
+            setSeconds(DEFAULT_SETTINGS.focusTime * 60);
+            setCurrentStreak(0);
+            setSessionsCompleted(0);
+            setCycleCount(0);
+            setStudyTarget('');
+            setIsGroupCreator(false);
+            setUseSyncedTimer(true);
+          }
+          
+          // Delete all messages in the group
+          await supabase.from('messages').delete().eq('group_id', group.id);
+          // Delete all exams in the group
+          await supabase.from('exams').delete().eq('group_id', group.id);
+          // Delete all users in the group
+          await supabase.from('users').delete().eq('group_id', group.id);
+          // Delete the group itself
+          await supabase.from('study_groups').delete().eq('id', group.id);
+        }
+      }
+    };
+
+    // Check every 5 minutes
+    const interval = setInterval(checkInactiveGroups, 5 * 60 * 1000);
+
+    // Initial check
+    checkInactiveGroups();
+
+    return () => clearInterval(interval);
+  }, [currentGroup]);
 
   // Check for inactive users (inactive for more than 30 minutes) and remove them from the group
   useEffect(() => {
@@ -758,6 +821,7 @@ export default function Home() {
     if (!groupName.trim() || !groupTopic.trim()) return;
     
     const code = generateGroupCode();
+    const now = new Date().toISOString();
     const { data, error } = await supabase
       .from('study_groups')
       .insert({
@@ -766,6 +830,7 @@ export default function Home() {
         topic: groupTopic,
         created_by: userName,
         is_public: isPublicGroup,
+        updated_at: now,
       })
       .select()
       .single();

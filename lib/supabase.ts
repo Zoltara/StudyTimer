@@ -13,6 +13,7 @@ export type StudyGroup = {
   created_by: string;
   is_public: boolean;
   created_at: string;
+  updated_at?: string;
 };
 
 export type User = {
