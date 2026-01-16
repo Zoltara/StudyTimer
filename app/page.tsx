@@ -1235,6 +1235,7 @@ export default function Home() {
             onChange={(e) => {
               setUserName(e.target.value);
               setNameError('');
+              setShowNameConfirm(false);
             }}
             onKeyDown={(e) => handleKeyPress(e, createUser)}
             className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
@@ -1243,12 +1244,38 @@ export default function Home() {
           {nameError && (
             <p className="text-red-400 text-sm mb-2">{nameError}</p>
           )}
-          <button
-            onClick={createUser}
-            className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
-          >
-            Start Studying
-          </button>
+          
+          {/* Name confirmation dialog */}
+          {showNameConfirm && (
+            <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
+              <p className="text-yellow-200 mb-3">
+                <strong>{userName}</strong> already exists in this group. Is that you?
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={joinAsExistingUser}
+                  className="flex-1 py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                >
+                  Yes, that&apos;s me!
+                </button>
+                <button
+                  onClick={rejectExistingUser}
+                  className="flex-1 py-2 rounded-lg font-semibold bg-zinc-600 hover:bg-zinc-500 transition"
+                >
+                  No, it&apos;s not me
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {!showNameConfirm && (
+            <button
+              onClick={createUser}
+              className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+            >
+              Start Studying
+            </button>
+          )}
         </div>
       </div>
     );
