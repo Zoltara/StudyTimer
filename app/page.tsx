@@ -223,6 +223,9 @@ export default function Home() {
   const isGroupCreatorRef = useRef<boolean>(isGroupCreator);
   const useSyncedTimerRef = useRef<boolean>(useSyncedTimer);
   const userNameRef = useRef<string>(userName);
+  
+  // Ref to store the settings channel for broadcasting
+  const settingsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
@@ -444,7 +447,12 @@ export default function Home() {
 
     // Subscribe to timer settings and state changes (broadcast)
     const settingsChannel = supabase
-      .channel(`settings-${currentGroup.id}`)
+      .channel(`settings-${currentGroup.id}`);
+    
+    // Store reference for broadcasting
+    settingsChannelRef.current = settingsChannel;
+    
+    settingsChannel
       .on('broadcast', { event: 'settings-change' }, (payload) => {
         const { settings: newSettings, changedBy } = payload.payload as {
           settings: TimerSettings;
@@ -533,7 +541,7 @@ export default function Home() {
         // Only the creator responds to timer requests
         if (isGroupCreatorRef.current && requestedBy !== userNameRef.current) {
           // Send current timer state to the new user
-          supabase.channel(`settings-${currentGroup.id}`).send({
+          settingsChannelRef.current?.send({
             type: 'broadcast',
             event: 'timer-response',
             payload: {
@@ -601,6 +609,7 @@ export default function Home() {
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
+      settingsChannelRef.current = null;
     };
   }, [currentUser, currentGroup, chatSoundEnabled]);
 
@@ -610,7 +619,7 @@ export default function Home() {
     
     // Small delay to ensure channel is subscribed
     const timeoutId = setTimeout(() => {
-      supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'timer-request',
         payload: { requestedBy: userName },
@@ -777,13 +786,16 @@ export default function Home() {
 
   // Broadcast timer tick to group members (group creator only)
   useEffect(() => {
-    if (!currentGroup || !isGroupCreator || timerState === 'idle') return;
+    if (!currentGroup || !isGroupCreator) return;
 
-    const broadcastTick = async () => {
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+    const broadcastTick = () => {
+      if (timerStateRef.current === 'idle') return;
+      if (!settingsChannelRef.current) return;
+      
+      settingsChannelRef.current.send({
         type: 'broadcast',
         event: 'timer-tick',
-        payload: { seconds, timerState },
+        payload: { seconds: secondsRef.current, timerState: timerStateRef.current },
       });
     };
 
@@ -791,7 +803,7 @@ export default function Home() {
     const interval = setInterval(broadcastTick, 1000);
 
     return () => clearInterval(interval);
-  }, [currentGroup, isGroupCreator, timerState, seconds]);
+  }, [currentGroup, isGroupCreator]);
 
   // Timer logic
   useEffect(() => {
@@ -824,7 +836,7 @@ export default function Home() {
       
       // Broadcast lostInBreak state to group members (only if group creator)
       if (currentGroup && isGroupCreator) {
-        supabase.channel(`settings-${currentGroup.id}`).send({
+        settingsChannelRef.current?.send({
           type: 'broadcast',
           event: 'timer-sync',
           payload: { timerState: 'lostInBreak', seconds: 0, cycleCount: cycleCount, changedBy: userName },
@@ -1077,7 +1089,7 @@ export default function Home() {
     
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator) {
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: 0, changedBy: userName },
@@ -1102,7 +1114,7 @@ export default function Home() {
     
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator) {
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'break', seconds: breakSeconds, cycleCount: cycle, changedBy: userName },
@@ -1125,7 +1137,7 @@ export default function Home() {
     
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator) {
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: cycleCount, changedBy: userName },
@@ -1147,7 +1159,7 @@ export default function Home() {
     
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator) {
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'idle', seconds: idleSeconds, cycleCount: 0, changedBy: userName },
@@ -1196,7 +1208,7 @@ export default function Home() {
       localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
       
       // Broadcast exam update to group
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'exam-update',
         payload: {},
@@ -1223,7 +1235,7 @@ export default function Home() {
       );
       
       // Broadcast exam update to group
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'exam-update',
         payload: {},
@@ -1241,7 +1253,7 @@ export default function Home() {
     
     // Broadcast exam update to group
     if (currentGroup) {
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'exam-update',
         payload: {},
@@ -1266,7 +1278,7 @@ export default function Home() {
 
     // Broadcast settings change to all users in the group
     if (currentGroup) {
-      await supabase.channel(`settings-${currentGroup.id}`).send({
+      settingsChannelRef.current?.send({
         type: 'broadcast',
         event: 'settings-change',
         payload: {
@@ -2132,7 +2144,7 @@ export default function Home() {
                     if (!confirmed) return;
                     
                     // Broadcast group deletion to all members
-                    await supabase.channel(`settings-${currentGroup.id}`).send({
+                    settingsChannelRef.current?.send({
                       type: 'broadcast',
                       event: 'group-deleted',
                       payload: { groupName: currentGroup.name, deletedBy: userName },
