@@ -180,34 +180,14 @@ function CircularProgress({
 
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [userName, setUserName] = useState('');
-  const [nameError, setNameError] = useState('');
-  const [existingUserId, setExistingUserId] = useState<string | null>(null);
-  const [showNameConfirm, setShowNameConfirm] = useState(false);
-  const [isNameSet, setIsNameSet] = useState(false);
-  const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
-  const [timerState, setTimerState] = useState<TimerState>('idle');
-  const [sessionsCompleted, setSessionsCompleted] = useState(0);
-  const [currentStreak, setCurrentStreak] = useState(0);
-  const [cycleCount, setCycleCount] = useState(0);
 
-  // Group state
-  const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>(null);
-  const [groupScreen, setGroupScreen] = useState<'select' | 'create' | 'join' | 'lobby'>('select');
-  const [groupName, setGroupName] = useState('');
-  const [groupTopic, setGroupTopic] = useState('');
-  const [isPublicGroup, setIsPublicGroup] = useState(true);
-  const [joinCode, setJoinCode] = useState('');
-  const [joinError, setJoinError] = useState('');
-  const [publicGroups, setPublicGroups] = useState<StudyGroup[]>([]);
-  const [showGroupCode, setShowGroupCode] = useState(false);
-  const [isGroupCreator, setIsGroupCreator] = useState(false);
-  const [useSyncedTimer, setUseSyncedTimer] = useState(true); // Whether non-creators sync with creator's timer
 
-  // Always scroll to top when main screen changes
-  useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [groupScreen]);
+  // ...existing state declarations...
+
+  // ...state declarations...
+
+  // ...state declarations...
+
   const [userName, setUserName] = useState('');
   const [nameError, setNameError] = useState('');
   const [existingUserId, setExistingUserId] = useState<string | null>(null);
@@ -242,6 +222,11 @@ export default function Home() {
   const [smoothProgress, setSmoothProgress] = useState(1);
   const lastTickRef = useRef<number>(Date.now());
   const animationFrameRef = useRef<number | null>(null);
+
+  // Always scroll to top when main screen changes
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [groupScreen]);
 
   // Chat state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -1686,6 +1671,14 @@ export default function Home() {
                     </div>
                   </div>
                 </CircularProgress>
+              </div>
+
+              {/* Timer Settings Display */}
+              <div className="mb-4 text-center text-xs text-zinc-400">
+                <span className="inline-block mx-2">Focus: <span className="text-emerald-400 font-semibold">{settings.focusTime} min</span></span>
+                <span className="inline-block mx-2">Short Break: <span className="text-yellow-400 font-semibold">{settings.shortBreakTime} min</span></span>
+                <span className="inline-block mx-2">Long Break: <span className="text-purple-400 font-semibold">{settings.longBreakTime} min</span></span>
+                <span className="inline-block mx-2">Cycles: <span className="text-blue-400 font-semibold">{settings.cyclesBeforeLongBreak}</span></span>
               </div>
 
               <div className="space-y-2">
