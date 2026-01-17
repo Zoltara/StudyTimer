@@ -212,6 +212,13 @@ export default function Home() {
   const [isGroupCreator, setIsGroupCreator] = useState(false);
   const [useSyncedTimer, setUseSyncedTimer] = useState(true); // Whether non-creators sync with creator's timer
 
+  // Always set creator rights if userName matches currentGroup.created_by
+  useEffect(() => {
+    if (currentGroup && userName && currentGroup.created_by === userName) {
+      setIsGroupCreator(true);
+    }
+  }, [currentGroup, userName]);
+
   // Timer settings
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
   const [editingSettings, setEditingSettings] = useState(false);
@@ -902,6 +909,8 @@ export default function Home() {
       return;
     }
 
+    // Only set creator rights on new group creation
+
     await createNewUser();
   };
 
@@ -974,7 +983,9 @@ export default function Home() {
     setCurrentStreak(existingUser.streak || 0);
     setIsNameSet(true);
     setShowNameConfirm(false);
-    
+
+    // Only set creator rights on new group creation
+
     // Auto-set study target to group topic
     if (currentGroup?.topic) {
       setStudyTarget(currentGroup.topic);
