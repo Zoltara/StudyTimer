@@ -185,8 +185,23 @@ export default function Home() {
   const [existingUserId, setExistingUserId] = useState<string | null>(null);
   const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [isNameSet, setIsNameSet] = useState(false);
-  const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
-  const [timerState, setTimerState] = useState<TimerState>('idle');
+  // Timer state: for creators, initialize to default; for non-creators, initialize to undefined and show syncing until received
+  const [seconds, setSeconds] = useState<number | undefined>(undefined);
+  const [timerState, setTimerState] = useState<TimerState | undefined>(undefined);
+  const [isTimerSynced, setIsTimerSynced] = useState(true); // true for creators, false for non-creators until sync
+      // Set timer defaults for creators, show syncing for non-creators
+      useEffect(() => {
+        if (!currentUser || !currentGroup) return;
+        if (isGroupCreator) {
+          setTimerState('idle');
+          setSeconds(DEFAULT_SETTINGS.focusTime * 60);
+          setIsTimerSynced(true);
+        } else {
+          setTimerState(undefined);
+          setSeconds(undefined);
+          setIsTimerSynced(false);
+        }
+      }, [currentUser, currentGroup, isGroupCreator]);
     // ...existing code...
   const [sessionsCompleted, setSessionsCompleted] = useState(0);
   const [currentStreak, setCurrentStreak] = useState(0);
@@ -596,7 +611,7 @@ export default function Home() {
           setSeconds(newSeconds);
           setCycleCount(newCycleCount);
           setSettings(newSettings);
-          
+          setIsTimerSynced(true);
           // Start ticking if in focus state
           if (newTimerState === 'focus') {
             const audio = getAudioManager();
