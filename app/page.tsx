@@ -180,8 +180,6 @@ function CircularProgress({
 
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-
-  // ...existing code...
   const [userName, setUserName] = useState('');
   const [nameError, setNameError] = useState('');
   const [existingUserId, setExistingUserId] = useState<string | null>(null);
