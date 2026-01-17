@@ -185,17 +185,9 @@ export default function Home() {
   const [existingUserId, setExistingUserId] = useState<string | null>(null);
   const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [isNameSet, setIsNameSet] = useState(false);
-  // Timer state: for creators, initialize to default; for non-creators, initialize to undefined and wait for sync
-  const [seconds, setSeconds] = useState<number | undefined>(undefined);
-  const [timerState, setTimerState] = useState<TimerState | undefined>(undefined);
-    // Helper: set default timer state for creators only
-    useEffect(() => {
-      if (!currentUser || !currentGroup) return;
-      if (isGroupCreator) {
-        setTimerState('idle');
-        setSeconds(DEFAULT_SETTINGS.focusTime * 60);
-      }
-    }, [currentUser, currentGroup, isGroupCreator]);
+  const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
+  const [timerState, setTimerState] = useState<TimerState>('idle');
+    // ...existing code...
   const [sessionsCompleted, setSessionsCompleted] = useState(0);
   const [currentStreak, setCurrentStreak] = useState(0);
   const [cycleCount, setCycleCount] = useState(0);
