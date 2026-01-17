@@ -181,6 +181,31 @@ function CircularProgress({
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
+  // ...existing code...
+  const [userName, setUserName] = useState('');
+  const [nameError, setNameError] = useState('');
+  const [existingUserId, setExistingUserId] = useState<string | null>(null);
+  const [showNameConfirm, setShowNameConfirm] = useState(false);
+  const [isNameSet, setIsNameSet] = useState(false);
+  const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
+  const [timerState, setTimerState] = useState<TimerState>('idle');
+  const [sessionsCompleted, setSessionsCompleted] = useState(0);
+  const [currentStreak, setCurrentStreak] = useState(0);
+  const [cycleCount, setCycleCount] = useState(0);
+
+  // Group state
+  const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>(null);
+  const [groupScreen, setGroupScreen] = useState<'select' | 'create' | 'join' | 'lobby'>('select');
+  const [groupName, setGroupName] = useState('');
+  const [groupTopic, setGroupTopic] = useState('');
+  const [isPublicGroup, setIsPublicGroup] = useState(true);
+  const [joinCode, setJoinCode] = useState('');
+  const [joinError, setJoinError] = useState('');
+  const [publicGroups, setPublicGroups] = useState<StudyGroup[]>([]);
+  const [showGroupCode, setShowGroupCode] = useState(false);
+  const [isGroupCreator, setIsGroupCreator] = useState(false);
+  const [useSyncedTimer, setUseSyncedTimer] = useState(true); // Whether non-creators sync with creator's timer
+
   // Always scroll to top when main screen changes
   useEffect(() => {
     window.scrollTo(0, 0);
