@@ -185,20 +185,15 @@ export default function Home() {
   const [existingUserId, setExistingUserId] = useState<string | null>(null);
   const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [isNameSet, setIsNameSet] = useState(false);
-  // Timer state: for creators, initialize to default; for non-creators, initialize to undefined and show syncing until received
-  const [seconds, setSeconds] = useState<number | undefined>(undefined);
-  const [timerState, setTimerState] = useState<TimerState | undefined>(undefined);
+  const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
+  const [timerState, setTimerState] = useState<TimerState>('idle');
   const [isTimerSynced, setIsTimerSynced] = useState(true); // true for creators, false for non-creators until sync
-      // Set timer defaults for creators, show syncing for non-creators
+      // Set syncing state for non-creators, but never make timer state/seconds undefined
       useEffect(() => {
         if (!currentUser || !currentGroup) return;
         if (isGroupCreator) {
-          setTimerState('idle');
-          setSeconds(DEFAULT_SETTINGS.focusTime * 60);
           setIsTimerSynced(true);
         } else {
-          setTimerState(undefined);
-          setSeconds(undefined);
           setIsTimerSynced(false);
         }
       }, [currentUser, currentGroup, isGroupCreator]);
