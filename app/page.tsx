@@ -187,7 +187,6 @@ export default function Home() {
   const [isNameSet, setIsNameSet] = useState(false);
   const [seconds, setSeconds] = useState(DEFAULT_SETTINGS.focusTime * 60);
   const [timerState, setTimerState] = useState<TimerState>('idle');
-  const [isTimerSynced, setIsTimerSynced] = useState(true); // true for creators, false for non-creators until sync
       // Set syncing state for non-creators, but never make timer state/seconds undefined
       useEffect(() => {
         if (!currentUser || !currentGroup) return;
