@@ -180,6 +180,11 @@ function CircularProgress({
 
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  // Always scroll to top when main screen changes
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [groupScreen]);
   const [userName, setUserName] = useState('');
   const [nameError, setNameError] = useState('');
   const [existingUserId, setExistingUserId] = useState<string | null>(null);
@@ -894,6 +899,7 @@ export default function Home() {
 
   const createNewUser = async () => {
     if (!userName.trim() || !currentGroup) return;
+    
     setNameError('');
     setShowNameConfirm(false);
 
@@ -920,16 +926,12 @@ export default function Home() {
     if (data) {
       setCurrentUser(data);
       setIsNameSet(true);
-      // Restore creator rights if this user is the group creator
-      if (currentGroup?.created_by && userName.trim() === currentGroup.created_by) {
-        setIsGroupCreator(true);
-      } else {
-        setIsGroupCreator(false);
-      }
+      
       // Auto-set study target to group topic
       if (currentGroup?.topic) {
         setStudyTarget(currentGroup.topic);
       }
+
       // Send welcome message
       await supabase.from('messages').insert({
         user_id: data.id,
@@ -964,16 +966,12 @@ export default function Home() {
     setCurrentStreak(existingUser.streak || 0);
     setIsNameSet(true);
     setShowNameConfirm(false);
-    // Restore creator rights if this user is the group creator
-    if (currentGroup?.created_by && userName.trim() === currentGroup.created_by) {
-      setIsGroupCreator(true);
-    } else {
-      setIsGroupCreator(false);
-    }
+    
     // Auto-set study target to group topic
     if (currentGroup?.topic) {
       setStudyTarget(currentGroup.topic);
     }
+
     // Send welcome back message
     await supabase.from('messages').insert({
       user_id: existingUserId,
