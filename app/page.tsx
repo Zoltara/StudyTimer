@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase, User, Message as DbMessage, Exam as DbExam, StudyGroup, generateGroupCode } from '../lib/supabase';
+import { supabase, User, Message as DbMessage, Exam as DbExam, StudyGroup, generateGroupCode, signUp, signIn, signOut, resetPassword, getCurrentUser } from '../lib/supabase';
 
 // Audio file paths
 const AUDIO_FILES = {
@@ -9,6 +9,7 @@ const AUDIO_FILES = {
   ticking: '/audio/Pomodoro clock ticking.mp3',
   shortBreak: '/audio/Pomodoro  break.wav',
   longBreak: '/audio/Pomodoro long break.wav',
+  notification: '/audio/notification.mp3',
 };
 
 // Audio manager for handling sounds
@@ -20,6 +21,17 @@ class AudioManager {
     try {
       const audio = new Audio(src);
       audio.volume = 0.5;
+      audio.play().catch(e => console.log('Audio play failed:', e));
+    } catch (e) {
+      console.log('Audio not supported');
+    }
+  }
+
+  playNotification() {
+    if (typeof window === 'undefined') return;
+    try {
+      const audio = new Audio('/audio/AtomAppear.mp3');
+      audio.volume = 0.7;
       audio.play().catch(e => console.log('Audio play failed:', e));
     } catch (e) {
       console.log('Audio not supported');
@@ -207,17 +219,59 @@ export default function Home() {
   const [isPublicGroup, setIsPublicGroup] = useState(true);
   const [joinCode, setJoinCode] = useState('');
   const [joinError, setJoinError] = useState('');
+  const [createError, setCreateError] = useState('');
   const [publicGroups, setPublicGroups] = useState<StudyGroup[]>([]);
   const [showGroupCode, setShowGroupCode] = useState(false);
   const [isGroupCreator, setIsGroupCreator] = useState(false);
   const [useSyncedTimer, setUseSyncedTimer] = useState(true); // Whether non-creators sync with creator's timer
 
-  // Always set creator rights if userName matches currentGroup.created_by
+  // Auth state
+  const [user, setUser] = useState<any>(null);
+  const [showAuth, setShowAuth] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  // Restore user session on mount
   useEffect(() => {
-    if (currentGroup && userName && currentGroup.created_by === userName) {
+    const restoreSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setUser(session.user);
+          console.log('Session restored:', session.user.email);
+        }
+      } catch (e) {
+        console.log('Error restoring session:', e);
+      }
+    };
+    restoreSession();
+  }, []);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup' | 'reset'>('signin');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSent, setResetSent] = useState(false);
+
+  // Always set creator rights if user.id matches currentGroup.created_by
+  useEffect(() => {
+    if (currentGroup && user && currentGroup.created_by === user.id) {
       setIsGroupCreator(true);
+    } else {
+      setIsGroupCreator(false);
     }
-  }, [currentGroup, userName]);
+  }, [currentGroup, user]);
+
+  // Helper to attach creator's display name to a group object
+  const attachCreatorName = async (group: any) => {
+    if (!group || !group.created_by) return group;
+    try {
+      const { data } = await supabase.from('users').select('name').eq('auth_id', group.created_by);
+      const creatorName = data && data.length > 0 ? data[0].name : group.created_by;
+      return { ...group, created_by_name: creatorName };
+    } catch (e) {
+      return { ...group, created_by_name: group.created_by };
+    }
+  };
 
   // Timer settings
   const [settings, setSettings] = useState<TimerSettings>(DEFAULT_SETTINGS);
@@ -234,6 +288,60 @@ export default function Home() {
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [groupScreen]);
+
+  // Check auth state on mount
+  useEffect(() => {
+    const checkUser = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        setUser(data.user ?? null);
+      } catch (e) {
+        setUser(null);
+      }
+    };
+    checkUser();
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+      if (u) setShowAuth(false);
+    });
+
+    return () => {
+      try {
+        data.subscription.unsubscribe();
+      } catch (e) {
+        // ignore
+      }
+    };
+  }, []);
+
+  // URL fallback: open auth UI if ?auth=1 or ?auth=signin is present
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const authParam = params.get('auth');
+    if (authParam === '1' || authParam === 'signin') {
+      setAuthMode('signin');
+      setShowAuth(true);
+    }
+  }, []);
+
+  // Add listener for external auth events (for backward compatibility)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const openHandler = (e: any) => {
+      console.log('openStudyTimerAuth event received', e?.detail);
+      setAuthMode(e?.detail?.mode || 'signin');
+      setShowAuth(true);
+    };
+    window.addEventListener('openStudyTimerAuth', openHandler as EventListener);
+
+    return () => {
+      window.removeEventListener('openStudyTimerAuth', openHandler as EventListener);
+    };
+  }, []);
 
   // Chat state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -367,9 +475,9 @@ export default function Home() {
           // Only process messages for this group
           if (m.group_id !== currentGroup.id) return;
           
-          // Play notification sound for messages from others (not system, not self)
-          if (!m.is_system && m.user_name !== userName && chatSoundEnabled) {
-            getAudioManager()?.playSound(AUDIO_FILES.start);
+          // Play notification sound for all messages (not system messages)
+          if (!m.is_system && chatSoundEnabled) {
+            getAudioManager()?.playNotification();
           }
           setMessages((prev) => {
             // Avoid duplicates
@@ -448,12 +556,13 @@ export default function Home() {
     const settingsChannel = supabase
       .channel(`settings-${currentGroup.id}`)
       .on('broadcast', { event: 'settings-change' }, (payload) => {
-        const { settings: newSettings, changedBy } = payload.payload as {
+        const { settings: newSettings, changedById, changedByName } = payload.payload as {
           settings: TimerSettings;
-          changedBy: string;
+          changedById?: string;
+          changedByName?: string;
         };
         // Only update settings if it's from someone else
-        if (changedBy !== userName) {
+        if (changedById !== user?.id) {
           // Only apply settings if non-creator AND using synced timer
           if (!isGroupCreator && useSyncedTimer) {
             setSettings(newSettings);
@@ -463,43 +572,44 @@ export default function Home() {
           }
           // Show notification to everyone
           const suffix = !isGroupCreator && !useSyncedTimer ? ' (you are using own timer)' : '';
-          setSettingsWarning(`⚠️ Timer Changed by ${changedBy}${suffix}`);
+          setSettingsWarning(`⚠️ Timer Changed by ${changedByName || 'group member'}${suffix}`);
           // Auto-hide warning after 5 seconds
           setTimeout(() => setSettingsWarning(null), 5000);
         }
       })
       .on('broadcast', { event: 'timer-sync' }, (payload) => {
-        const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, changedBy } = payload.payload as {
+        const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, changedById, changedByName } = payload.payload as {
           timerState: TimerState;
           seconds: number;
           cycleCount: number;
-          changedBy: string;
+          changedById?: string;
+          changedByName?: string;
         };
         // Sync timer from group creator (only for non-creators who chose to sync)
-        if (changedBy !== userName && !isGroupCreator && useSyncedTimer) {
+        if (changedById !== user?.id && !isGroupCreator && useSyncedTimer) {
           const audio = getAudioManager();
           const prevTimerState = timerState;
-          
+
           setTimerState(newTimerState);
           setSeconds(newSeconds);
           if (newCycleCount !== undefined) setCycleCount(newCycleCount);
-          
+
           // Play audio when state changes
           if (prevTimerState !== newTimerState) {
             if (newTimerState === 'focus') {
               audio?.focusStart();
               setTimeout(() => audio?.playSound(AUDIO_FILES.ticking), 500);
-              setSettingsWarning(`🚀 ${changedBy} started a focus session!`);
+              setSettingsWarning(`🚀 ${changedByName || 'Someone'} started a focus session!`);
             } else if (newTimerState === 'break') {
               audio?.stopTicking();
               audio?.shortBreak();
-              setSettingsWarning(`☕ ${changedBy} started a break!`);
+              setSettingsWarning(`☕ ${changedByName || 'Someone'} started a break!`);
             } else if (newTimerState === 'idle') {
               audio?.stopTicking();
-              setSettingsWarning(`⏹️ ${changedBy} ended the session`);
+              setSettingsWarning(`⏹️ ${changedByName || 'Someone'} ended the session`);
             } else if (newTimerState === 'lostInBreak') {
               audio?.stopTicking();
-              setSettingsWarning(`⚠️ ${changedBy} lost in break!`);
+              setSettingsWarning(`⚠️ ${changedByName || 'Someone'} lost in break!`);
             }
             setTimeout(() => setSettingsWarning(null), 3000);
           }
@@ -773,7 +883,7 @@ export default function Home() {
         supabase.channel(`settings-${currentGroup.id}`).send({
           type: 'broadcast',
           event: 'timer-sync',
-          payload: { timerState: 'lostInBreak', seconds: 0, cycleCount: cycleCount, changedBy: userName },
+          payload: { timerState: 'lostInBreak', seconds: 0, cycleCount: cycleCount, changedById: user?.id, changedByName: userName },
         });
       }
     }
@@ -827,7 +937,18 @@ export default function Home() {
         .eq('is_public', true)
         .order('created_at', { ascending: false });
       if (data) {
-        setPublicGroups(data);
+        // Attach creator display names
+        const creatorIds = Array.from(new Set(data.map((g: any) => g.created_by).filter(Boolean)));
+        let creators: any[] = [];
+        if (creatorIds.length > 0) {
+          const res = await supabase.from('users').select('auth_id, name').in('auth_id', creatorIds);
+          creators = res.data || [];
+        }
+        const groupsWithNames = data.map((g: any) => ({
+          ...g,
+          created_by_name: (creators.find(c => c.auth_id === g.created_by)?.name) || g.created_by,
+        }));
+        setPublicGroups(groupsWithNames);
       }
     };
     loadPublicGroups();
@@ -838,6 +959,12 @@ export default function Home() {
   }, []);
 
   const createGroup = async () => {
+    setCreateError('');
+    if (!user) {
+      setCreateError('Please sign in to create a group.');
+      setAuthMode('signin');
+      return;
+    }
     if (!groupName.trim() || !groupTopic.trim()) return;
     
     const code = generateGroupCode();
@@ -848,7 +975,7 @@ export default function Home() {
         code,
         name: groupName,
         topic: groupTopic,
-        created_by: userName,
+        created_by: user.id,
         is_public: isPublicGroup,
         updated_at: now,
       })
@@ -857,36 +984,86 @@ export default function Home() {
 
     if (error) {
       console.error('Error creating group:', error);
+      setCreateError(error.message || 'Failed to create group');
       return;
     }
 
     if (data) {
-      setCurrentGroup(data);
+      const groupWithName = await attachCreatorName(data);
+      setCurrentGroup(groupWithName);
       setIsGroupCreator(true);
       setGroupScreen('lobby');
     }
   };
 
   const joinGroup = async (code?: string) => {
-    const codeToUse = code || joinCode.trim().toUpperCase();
-    if (!codeToUse) return;
-
-    const { data, error } = await supabase
-      .from('study_groups')
-      .select('*')
-      .eq('code', codeToUse)
-      .single();
-
-    if (error || !data) {
-      setJoinError('Group not found. Please check the code.');
+    // Must be signed in to join a group
+    if (!user) {
+      setJoinError('Please sign in to join a group');
+      setShowAuth(true);
       return;
     }
 
-    setCurrentGroup(data);
-    setIsGroupCreator(false);
-    setUseSyncedTimer(true);
-    setJoinError('');
-    setGroupScreen('lobby');
+    const codeToUse = code || joinCode.trim().toUpperCase();
+    if (!codeToUse || codeToUse.length !== 6) {
+      setJoinError('Please enter a 6-character code');
+      return;
+    }
+
+    try {
+      console.log('Joining group with code:', codeToUse);
+      const { data, error } = await supabase
+        .from('study_groups')
+        .select('*')
+        .eq('code', codeToUse)
+        .single();
+
+      console.log('Group lookup result:', { data, error });
+
+      if (error || !data) {
+        setJoinError('Group not found. Please check the code.');
+        return;
+      }
+
+      const groupWithName = await attachCreatorName(data);
+      console.log('Group with name:', groupWithName);
+      setCurrentGroup(groupWithName);
+
+      // Check if user already exists in this group
+      console.log('Checking if user exists in group. user.id:', user.id, 'group.id:', groupWithName.id);
+      const { data: existingUsers } = await supabase
+        .from('users')
+        .select('*')
+        .eq('auth_id', user.id)
+        .eq('group_id', groupWithName.id);
+
+      console.log('Existing users:', existingUsers);
+      const existingUser = existingUsers && existingUsers.length > 0 ? existingUsers[0] : null;
+
+      // Always show name entry screen, regardless of whether user exists
+      // This lets them choose to use existing name or create new one
+      setIsNameSet(false);
+      setShowNameConfirm(false);
+      
+      if (existingUser) {
+        console.log('User already in group, showing option to reuse:', existingUser.name);
+        // Pre-fill with existing name so they can see it
+        setUserName(existingUser.name);
+        // Don't auto-login - let them see the name entry screen
+      } else {
+        console.log('New user in group, showing name entry screen');
+        setUserName('');
+      }
+
+      setUseSyncedTimer(true);
+      setJoinError('');
+      setJoinCode('');
+      setGroupScreen('select');
+      console.log('Join complete');
+    } catch (e: any) {
+      console.error('Join group error:', e);
+      setJoinError(e?.message || 'Failed to join group');
+    }
   };
 
   const createUser = async () => {
@@ -894,22 +1071,6 @@ export default function Home() {
     if (!currentGroup) return;
 
     console.log('Creating user:', userName);
-
-    // Check if name already exists in this group
-    const { data: existingUsers } = await supabase
-      .from('users')
-      .select('*')
-      .eq('group_id', currentGroup.id)
-      .ilike('name', userName.trim());
-
-    if (existingUsers && existingUsers.length > 0) {
-      // Show confirmation dialog
-      setExistingUserId(existingUsers[0].id);
-      setShowNameConfirm(true);
-      return;
-    }
-
-    // Only set creator rights on new group creation
 
     await createNewUser();
   };
@@ -923,6 +1084,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from('users')
       .insert({ 
+        auth_id: user.id,
         name: userName, 
         group_id: currentGroup.id,
         status: 'online', 
@@ -1031,7 +1193,7 @@ export default function Home() {
       await supabase.channel(`settings-${currentGroup.id}`).send({
         type: 'broadcast',
         event: 'timer-sync',
-        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: 0, changedBy: userName },
+        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: 0, changedById: user?.id, changedByName: userName },
       });
     }
   };
@@ -1056,7 +1218,7 @@ export default function Home() {
       await supabase.channel(`settings-${currentGroup.id}`).send({
         type: 'broadcast',
         event: 'timer-sync',
-        payload: { timerState: 'break', seconds: breakSeconds, cycleCount: cycle, changedBy: userName },
+        payload: { timerState: 'break', seconds: breakSeconds, cycleCount: cycle, changedById: user?.id, changedByName: userName },
       });
     }
   };
@@ -1079,7 +1241,7 @@ export default function Home() {
       await supabase.channel(`settings-${currentGroup.id}`).send({
         type: 'broadcast',
         event: 'timer-sync',
-        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: cycleCount, changedBy: userName },
+        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: cycleCount, changedById: user?.id, changedByName: userName },
       });
     }
   };
@@ -1101,7 +1263,7 @@ export default function Home() {
       await supabase.channel(`settings-${currentGroup.id}`).send({
         type: 'broadcast',
         event: 'timer-sync',
-        payload: { timerState: 'idle', seconds: idleSeconds, cycleCount: 0, changedBy: userName },
+        payload: { timerState: 'idle', seconds: idleSeconds, cycleCount: 0, changedById: user?.id, changedByName: userName },
       });
     }
   };
@@ -1222,7 +1384,8 @@ export default function Home() {
         event: 'settings-change',
         payload: {
           settings: tempSettings,
-          changedBy: userName,
+          changedById: user?.id,
+          changedByName: userName,
         },
       });
     }
@@ -1254,23 +1417,255 @@ export default function Home() {
     }
   };
 
-  // Group Selection Screen
-  if (!currentGroup) {
+  // Show auth screen when no user
+  if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white p-4">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white">
+        <h1 className="text-5xl font-bold mb-4 text-emerald-500">StudyTimer</h1>
+        <p className="text-xl text-zinc-400 mb-8">Stay focused with your friends.</p>
+        <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-80">
+          <h2 className="text-2xl font-semibold mb-6 text-center">
+            {authMode === 'signin' ? 'Sign In' : 'Sign Up'}
+          </h2>
+          {authError && (
+            <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
+              {authError}
+            </div>
+          )}
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setAuthError('');
+              setAuthLoading(true);
+              try {
+                if (!email || !password) {
+                  setAuthError('Please enter both email and password');
+                  setAuthLoading(false);
+                  return;
+                }
+                console.log('Attempting', authMode, 'with', email);
+                if (authMode === 'signin') {
+                  const { error } = await signIn(email, password);
+                  if (error) {
+                    console.error('SignIn failed:', error);
+                    setAuthError(error.message || 'Failed to sign in. Check your email and password.');
+                  } else {
+                    console.log('SignIn successful');
+                    setEmail('');
+                    setPassword('');
+                    // Clear group and user state so user can choose fresh
+                    setCurrentGroup(null);
+                    setCurrentUser(null);
+                    setIsNameSet(false);
+                    setGroupScreen('select');
+                    // Get the current authenticated user
+                    const currentUser = await getCurrentUser();
+                    console.log('Current user after signin:', currentUser);
+                    setUser(currentUser);
+                  }
+                } else {
+                  const { error } = await signUp(email, password);
+                  if (error) {
+                    console.error('SignUp failed:', error);
+                    setAuthError(error.message || 'Failed to sign up');
+                  } else {
+                    console.log('SignUp successful');
+                    setAuthError('Check your email for confirmation link');
+                    setEmail('');
+                    setPassword('');
+                    // Clear group and user state so user can choose fresh
+                    setCurrentGroup(null);
+                    setCurrentUser(null);
+                    setIsNameSet(false);
+                    setGroupScreen('select');
+                    // Get the current authenticated user
+                    const currentUser = await getCurrentUser();
+                    console.log('Current user after signup:', currentUser);
+                    setUser(currentUser);
+                  }
+                }
+              } catch (err: any) {
+                console.error('Auth error:', err);
+                setAuthError(err?.message || 'An unexpected error occurred');
+              } finally {
+                setAuthLoading(false);
+              }
+            }}
+            className="space-y-4"
+          >
+            <div>
+              <label className="block text-sm font-medium mb-2">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={authLoading}
+                className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                placeholder="your@email.com"
+                autoFocus
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={authLoading}
+                className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                placeholder="••••••••"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={authLoading}
+              onClick={(e) => {
+                console.log('Submit button clicked', authMode, email, password);
+              }}
+              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base cursor-pointer"
+            >
+              {authLoading ? (authMode === 'signin' ? 'Signing in...' : 'Signing up...') : (authMode === 'signin' ? 'Sign In' : 'Sign Up')}
+            </button>
+          </form>
+          <div className="mt-6 space-y-3">
+            {authMode === 'reset' ? (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setAuthError('');
+                  setAuthLoading(true);
+                  try {
+                    if (!resetEmail) {
+                      setAuthError('Please enter your email');
+                      setAuthLoading(false);
+                      return;
+                    }
+                    const { error } = await resetPassword(resetEmail);
+                    if (error) {
+                      setAuthError(error.message || 'Failed to send reset email');
+                    } else {
+                      setResetSent(true);
+                      setAuthError('');
+                    }
+                  } catch (err: any) {
+                    setAuthError(err?.message || 'An unexpected error occurred');
+                  } finally {
+                    setAuthLoading(false);
+                  }
+                }}
+                className="space-y-4"
+              >
+                {resetSent ? (
+                  <div className="bg-emerald-900/50 border border-emerald-700 p-4 rounded-lg text-emerald-200 text-sm text-center">
+                    ✓ Password reset email sent! Check your inbox for instructions.
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Email</label>
+                      <input
+                        type="email"
+                        value={resetEmail}
+                        onChange={(e) => setResetEmail(e.target.value)}
+                        disabled={authLoading}
+                        className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        placeholder="your@email.com"
+                        autoFocus
+                        required
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={authLoading}
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base cursor-pointer"
+                    >
+                      {authLoading ? 'Sending...' : 'Send Reset Link'}
+                    </button>
+                  </>
+                )}
+              </form>
+            ) : null}
+            <div className="text-center text-sm space-y-2">
+              {authMode === 'signin' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('reset');
+                    setAuthError('');
+                    setResetEmail('');
+                  }}
+                  className="text-emerald-400 hover:text-emerald-300 block w-full"
+                >
+                  Forgot password?
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode(authMode === 'reset' ? 'signin' : (authMode === 'signin' ? 'signup' : 'signin'));
+                  setAuthError('');
+                  setResetEmail('');
+                  setResetSent(false);
+                }}
+                className="text-emerald-400 hover:text-emerald-300"
+              >
+                {authMode === 'reset' ? '← Back to Sign In' : (authMode === 'signin' ? "Don't have an account? Sign Up" : 'Already have an account? Sign In')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isNameSet) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white">
         <h1 className="text-5xl font-bold mb-4 text-emerald-500">StudyTimer</h1>
         <p className="text-xl text-zinc-400 mb-8">Stay focused with your friends.</p>
 
-        {groupScreen === 'select' && (
+        {groupScreen === 'select' && !currentGroup && (
           <div className="w-full max-w-md space-y-4">
+            {!user && (
+              <div className="bg-zinc-800 p-4 rounded-lg border border-zinc-700 text-center">
+                <div className="text-sm text-zinc-300 mb-2">You must sign in to create or join groups.</div>
+                <button
+                  onClick={() => { setShowAuth(true); setAuthMode('signin'); }}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-sm"
+                >
+                  Sign In
+                </button>
+              </div>
+            )}
+            {user && (
+              <div className="bg-zinc-800 p-4 rounded-lg border border-zinc-700 flex justify-between items-center">
+                <div className="text-sm text-zinc-300">
+                  Signed in as: <span className="text-emerald-400 font-semibold">{user.email}</span>
+                </div>
+                <button
+                  onClick={async () => {
+                    await signOut();
+                    setUser(null);
+                    setCurrentGroup(null);
+                    setCurrentUser(null);
+                    setIsNameSet(false);
+                  }}
+                  className="px-3 py-1 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-sm text-zinc-300"
+                >
+                  Change User
+                </button>
+              </div>
+            )}
             <button
-              onClick={() => setGroupScreen('create')}
+              onClick={() => user ? setGroupScreen('create') : setShowAuth(true)}
               className="w-full py-4 rounded-xl font-semibold bg-emerald-600 hover:bg-emerald-700 transition text-lg"
             >
               🚀 Create New Group
             </button>
             <button
-              onClick={() => setGroupScreen('join')}
+              onClick={() => user ? setGroupScreen('join') : setShowAuth(true)}
               className="w-full py-4 rounded-xl font-semibold bg-purple-600 hover:bg-purple-700 transition text-lg"
             >
               🔗 Join with Code
@@ -1291,13 +1686,14 @@ export default function Home() {
                       <div>
                         <div className="font-semibold">{group.name}</div>
                         <div className="text-sm text-zinc-400">📚 {group.topic}</div>
-                        <div className="text-xs text-zinc-500">by {group.created_by}</div>
+                        <div className="text-xs text-zinc-500">by {group.created_by_name || group.created_by}</div>
                       </div>
                       <button
-                        onClick={() => joinGroup(group.code)}
-                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 transition text-sm"
+                        onClick={() => user ? joinGroup(group.code) : setShowAuth(true)}
+                        disabled={!user}
+                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 transition text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        Join
+                        {user ? 'Join' : 'Sign in to join'}
                       </button>
                     </div>
                   ))}
@@ -1347,11 +1743,14 @@ export default function Home() {
             
             <button
               onClick={createGroup}
-              disabled={!groupName.trim() || !groupTopic.trim()}
+              disabled={!groupName.trim() || !groupTopic.trim() || !user}
               className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Create Group
+              {user ? 'Create Group' : 'Sign in to create group'}
             </button>
+            {createError && (
+              <div className="mt-3 text-sm text-red-400">{createError}</div>
+            )}
           </div>
         )}
 
@@ -1388,6 +1787,81 @@ export default function Home() {
               className="w-full py-3 rounded-lg font-semibold bg-purple-600 hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed mt-4"
             >
               Join Group
+            </button>
+          </div>
+        )}
+
+        {/* Name Entry Screen - shows after joining a group */}
+        {currentGroup && (
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <div className="mb-4 text-center">
+              <h2 className="text-2xl font-bold">{currentGroup.name}</h2>
+              <p className="text-zinc-400">📚 {currentGroup.topic}</p>
+            </div>
+            
+            <div className="bg-zinc-800/50 p-4 rounded-xl mb-6">
+              <p className="text-sm text-emerald-400 font-semibold">✅ You've joined this group!</p>
+              <p className="text-xs text-zinc-400 mt-1">Enter your name to start studying</p>
+            </div>
+            
+            <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
+            <input
+              type="text"
+              value={userName}
+              onChange={(e) => {
+                setUserName(e.target.value);
+                setNameError('');
+                setShowNameConfirm(false);
+              }}
+              onKeyDown={(e) => handleKeyPress(e, createUser)}
+              className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
+              placeholder="Your name"
+              autoFocus
+            />
+            {nameError && (
+              <p className="text-red-400 text-sm mb-2">{nameError}</p>
+            )}
+            
+            {showNameConfirm && (
+              <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
+                <p className="text-yellow-200 mb-3">
+                  <strong>{userName}</strong> already exists in this group. Is that you?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={joinAsExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                  >
+                    Yes, that's me!
+                  </button>
+                  <button
+                    onClick={rejectExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-zinc-600 hover:bg-zinc-500 transition"
+                  >
+                    No, it's not me
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {!showNameConfirm && (
+              <button
+                onClick={createUser}
+                disabled={!userName.trim()}
+                className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Join & Start Studying
+              </button>
+            )}
+            
+            <button
+              onClick={() => {
+                setCurrentGroup(null);
+                setGroupScreen('select');
+              }}
+              className="w-full py-2 text-zinc-400 hover:text-white mt-4 text-sm"
+            >
+              ← Choose Different Group
             </button>
           </div>
         )}
@@ -1493,61 +1967,384 @@ export default function Home() {
     );
   }
 
-  if (!isNameSet) {
+  // Group Selection Screen
+  if (!currentGroup) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-950 text-white p-4">
         <h1 className="text-5xl font-bold mb-4 text-emerald-500">StudyTimer</h1>
         <p className="text-xl text-zinc-400 mb-8">Stay focused with your friends.</p>
-        <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-80">
-          <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
-          <input
-            type="text"
-            value={userName}
-            onChange={(e) => {
-              setUserName(e.target.value);
-              setNameError('');
-              setShowNameConfirm(false);
-            }}
-            onKeyDown={(e) => handleKeyPress(e, createUser)}
-            className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
-            placeholder="Your name"
-          />
-          {nameError && (
-            <p className="text-red-400 text-sm mb-2">{nameError}</p>
-          )}
-          
-          {/* Name confirmation dialog */}
-          {showNameConfirm && (
-            <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
-              <p className="text-yellow-200 mb-3">
-                <strong>{userName}</strong> already exists in this group. Is that you?
-              </p>
-              <div className="flex gap-2">
+
+        {groupScreen === 'select' && !currentGroup && (
+          <div className="w-full max-w-md space-y-4">
+            {!user && (
+              <div className="bg-zinc-800 p-4 rounded-lg border border-zinc-700 text-center">
+                <div className="text-sm text-zinc-400 mb-2">You must sign in to create or join groups.</div>
                 <button
-                  onClick={joinAsExistingUser}
-                  className="flex-1 py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                  onClick={() => { setShowAuth(true); setAuthMode('signin'); }}
+                  className="w-full py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
                 >
-                  Yes, that&apos;s me!
-                </button>
-                <button
-                  onClick={rejectExistingUser}
-                  className="flex-1 py-2 rounded-lg font-semibold bg-zinc-600 hover:bg-zinc-500 transition"
-                >
-                  No, it&apos;s not me
+                  Sign In
                 </button>
               </div>
-            </div>
-          )}
-          
-          {!showNameConfirm && (
+            )}
+            {user && (
+              <>
+                <button
+                  onClick={() => setGroupScreen('create')}
+                  className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                >
+                  ➕ Create a Study Group
+                </button>
+                <button
+                  onClick={() => setGroupScreen('join')}
+                  className="w-full py-3 rounded-lg font-semibold bg-purple-600 hover:bg-purple-700 transition"
+                >
+                  🔗 Join by Code
+                </button>
+                <div className="my-2 text-center text-sm text-zinc-500">or</div>
+                <button
+                  onClick={async () => {
+                    try {
+                      const { data } = await supabase.from('study_groups').select('*').eq('is_public', true).limit(10);
+                      if (data) {
+                        setPublicGroups(data.map(g => ({
+                          ...g,
+                          created_by_name: g.created_by,
+                        })));
+                        setGroupScreen('browse');
+                      }
+                    } catch (e) {
+                      console.log('Error loading public groups');
+                    }
+                  }}
+                  className="w-full py-3 rounded-lg font-semibold bg-blue-600 hover:bg-blue-700 transition"
+                >
+                  🌍 Browse Public Groups
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {groupScreen === 'create' && !user && (
+          <div className="bg-zinc-800 p-4 rounded-lg border border-zinc-700 text-center w-full max-w-md">
+            <div className="text-sm text-zinc-400 mb-2">Please sign in first</div>
             <button
-              onClick={createUser}
-              className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+              onClick={() => { setShowAuth(true); setAuthMode('signin'); }}
+              className="w-full py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
             >
-              Start Studying
+              Sign In
             </button>
-          )}
-        </div>
+          </div>
+        )}
+
+        {groupScreen === 'create' && user && (
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <h2 className="text-2xl font-bold mb-4">Create Study Group</h2>
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={groupName}
+                onChange={(e) => { setGroupName(e.target.value); setCreateError(''); }}
+                placeholder="Group name (e.g., AP Biology)"
+                className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white"
+              />
+              <input
+                type="text"
+                value={groupTopic}
+                onChange={(e) => { setGroupTopic(e.target.value); setCreateError(''); }}
+                placeholder="Topic (e.g., Photosynthesis)"
+                className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white"
+              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={isPublicGroup}
+                  onChange={(e) => setIsPublicGroup(e.target.checked)}
+                  id="publicToggle"
+                  className="w-4 h-4"
+                />
+                <label htmlFor="publicToggle" className="text-sm">Make this group public (anyone can find it)</label>
+              </div>
+              {createError && <div className="text-red-400 text-sm">{createError}</div>}
+              <button
+                onClick={async () => {
+                  if (!groupName.trim() || !groupTopic.trim()) {
+                    setCreateError('Please fill in all fields');
+                    return;
+                  }
+                  try {
+                    const code = generateGroupCode();
+                    const { error } = await supabase.from('study_groups').insert([
+                      {
+                        code,
+                        name: groupName,
+                        topic: groupTopic,
+                        created_by: user.id,
+                        is_public: isPublicGroup,
+                      },
+                    ]);
+                    if (error) {
+                      setCreateError(error.message);
+                    } else {
+                      const { data } = await supabase
+                        .from('study_groups')
+                        .select('*')
+                        .eq('code', code)
+                        .single();
+                      if (data) {
+                        const withName = await attachCreatorName(data);
+                        setCurrentGroup(withName);
+                        setGroupName('');
+                        setGroupTopic('');
+                        setIsPublicGroup(true);
+                      }
+                    }
+                  } catch (e) {
+                    setCreateError('Failed to create group');
+                  }
+                }}
+                className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+              >
+                Create Group
+              </button>
+              <button
+                onClick={() => setGroupScreen('select')}
+                className="w-full py-2 text-zinc-400 hover:text-white text-sm"
+              >
+                ← Back
+              </button>
+            </div>
+          </div>
+        )}
+
+        {groupScreen === 'join' && (
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <h2 className="text-2xl font-bold mb-4">Join Study Group</h2>
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={joinCode.toUpperCase()}
+                onChange={(e) => { setJoinCode(e.target.value.toUpperCase()); setJoinError(''); }}
+                placeholder="Enter 6-character code"
+                maxLength={6}
+                className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white text-center text-2xl tracking-wider"
+              />
+              {joinError && <div className="text-red-400 text-sm">{joinError}</div>}
+              <button
+                onClick={() => {
+                  console.log('Join button clicked with code:', joinCode);
+                  joinGroup(joinCode);
+                }}
+                disabled={joinCode.length !== 6}
+                className="w-full py-3 rounded-lg font-semibold bg-purple-600 hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed mt-4"
+              >
+                Join Group
+              </button>
+            </div>
+          </div>
+        )}
+
+        {groupScreen === 'browse' && (
+          <div className="w-full max-w-md space-y-4">
+            {publicGroups.length === 0 ? (
+              <div className="bg-zinc-800 p-4 rounded-lg border border-zinc-700 text-center">
+                <div className="text-sm text-zinc-400">No public groups found</div>
+              </div>
+            ) : (
+              publicGroups.map((group) => (
+                <button
+                  key={group.id}
+                  onClick={() => {
+                    if (user) {
+                      joinGroup(group.code);
+                    } else {
+                      setShowAuth(true);
+                    }
+                  }}
+                  className="w-full text-left p-4 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 transition"
+                >
+                  <div className="font-semibold text-emerald-400">{group.name}</div>
+                  <div className="text-sm text-zinc-400">📚 {group.topic}</div>
+                  <div className="text-xs text-zinc-500">Created by {group.created_by_name}</div>
+                </button>
+              ))
+            )}
+            <button
+              onClick={() => setGroupScreen('select')}
+              className="w-full py-2 text-zinc-400 hover:text-white text-sm"
+            >
+              ← Back
+            </button>
+          </div>
+        )}
+
+        {currentGroup && !isNameSet && groupScreen !== 'create' && groupScreen !== 'join' && groupScreen !== 'browse' && (
+          <div className="relative bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <div className="mb-4">
+              <p className="text-sm text-emerald-400 font-semibold">✅ You've joined <strong>{currentGroup.name}</strong>!</p>
+              <p className="text-xs text-emerald-300 mt-1">Now enter the name you want to use</p>
+            </div>
+            
+            <label className="block text-sm text-zinc-400 mb-2">Your Name in Group</label>
+            <input
+              type="text"
+              value={userName}
+              onChange={(e) => {
+                setUserName(e.target.value);
+                setNameError('');
+                setShowNameConfirm(false);
+              }}
+              onKeyDown={(e) => handleKeyPress(e, createUser)}
+              className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
+              placeholder="Your name"
+              autoFocus
+            />
+            {nameError && (
+              <p className="text-red-400 text-sm mb-2">{nameError}</p>
+            )}
+            
+            {showNameConfirm && (
+              <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
+                <p className="text-yellow-200 mb-3">
+                  <strong>{userName}</strong> already exists in this group. Is that you?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={joinAsExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                  >
+                    Yes, that's me!
+                  </button>
+                  <button
+                    onClick={rejectExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-zinc-600 hover:bg-zinc-500 transition"
+                  >
+                    No, it's not me
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {!showNameConfirm && (
+              <button
+                onClick={createUser}
+                disabled={!userName.trim()}
+                className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Join & Start Studying
+              </button>
+            )}
+            
+            <button
+              onClick={() => {
+                setCurrentGroup(null);
+                setGroupScreen('select');
+              }}
+              className="w-full py-2 text-zinc-400 hover:text-white mt-4 text-sm"
+            >
+              ← Choose Different Group
+            </button>
+          </div>
+        )}
+
+        {groupScreen === 'lobby' && currentGroup && (
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
+            <div className="text-center mb-6">
+              <h2 className="text-2xl font-bold">{currentGroup.name}</h2>
+              <p className="text-zinc-400">📚 {currentGroup.topic}</p>
+              {isGroupCreator && (
+                <span className="inline-block mt-2 px-2 py-1 rounded bg-emerald-600 text-xs">👑 Group Creator</span>
+              )}
+            </div>
+            
+            <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
+              <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
+              <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
+                {currentGroup.code}
+              </div>
+              
+              {/* QR Code */}
+              <div className="my-4">
+                <img
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentGroup.code)}&bgcolor=27272a&color=10b981`}
+                  alt="QR Code"
+                  className="mx-auto rounded-lg"
+                  width={150}
+                  height={150}
+                />
+                <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
+              </div>
+              
+              <button
+                onClick={copyGroupCode}
+                className="text-sm text-zinc-400 hover:text-white"
+              >
+                {showGroupCode ? '✓ Copied!' : '📋 Copy Code'}
+              </button>
+            </div>
+            
+            <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
+            <input
+              type="text"
+              value={userName}
+              onChange={(e) => {
+                setUserName(e.target.value);
+                setNameError('');
+                setShowNameConfirm(false);
+              }}
+              onKeyDown={(e) => handleKeyPress(e, createUser)}
+              className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
+              placeholder="Your name"
+            />
+            {nameError && (
+              <p className="text-red-400 text-sm mb-2">{nameError}</p>
+            )}
+            
+            {/* Name confirmation dialog */}
+            {showNameConfirm && (
+              <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
+                <p className="text-yellow-200 mb-3">
+                  <strong>{userName}</strong> already exists in this group. Is that you?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={joinAsExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                  >
+                    Yes, that's me!
+                  </button>
+                  <button
+                    onClick={rejectExistingUser}
+                    className="flex-1 py-2 rounded-lg font-semibold bg-zinc-600 hover:bg-zinc-500 transition"
+                  >
+                    No, it's not me
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {!showNameConfirm && (
+              <button
+                onClick={createUser}
+                disabled={!userName.trim()}
+                className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Join & Start Studying
+              </button>
+            )}
+            
+            <button
+              onClick={() => {
+                setCurrentGroup(null);
+                setGroupScreen('select');
+              }}
+              className="w-full py-2 text-zinc-400 hover:text-white mt-4 text-sm"
+            >
+              ← Choose Different Group
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -1569,15 +2366,118 @@ export default function Home() {
         </div>
       )}
 
+      {/* Account Modal */}
+      {user && showAuth && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[99998] p-4">
+          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-80">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-semibold">Account</h2>
+              <button
+                onClick={() => setShowAuth(false)}
+                className="text-zinc-400 hover:text-white text-2xl"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-zinc-800 p-4 rounded-lg">
+                <p className="text-sm text-zinc-400">Signed in as</p>
+                <p className="text-white font-medium break-all">{user.email}</p>
+              </div>
+              {currentUser && currentGroup && (
+                <div className="bg-zinc-800 p-4 rounded-lg">
+                  <p className="text-sm text-zinc-400">Studying as</p>
+                  <p className="text-white font-medium">{currentUser.name}</p>
+                  <p className="text-xs text-zinc-500 mt-1">in {currentGroup.name}</p>
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  setCurrentUser(null);
+                  setIsNameSet(false);
+                  setShowAuth(false);
+                  // Keep current group, so name screen shows
+                }}
+                className="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors text-sm"
+              >
+                Change User
+              </button>
+              <button
+                onClick={async () => {
+                  await signOut();
+                  setUser(null);
+                  setIsNameSet(false);
+                  setCurrentGroup(null);
+                  setCurrentUser(null);
+                  setGroupScreen('select');
+                  setShowAuth(false);
+                }}
+                className="w-full py-3 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="fixed top-3 right-3 z-[99999] pointer-events-auto">
+        {!user ? (
+          <button
+            onMouseDown={() => {
+              setShowAuth(true);
+              setAuthMode('signin');
+            }}
+            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-sm font-medium transition-colors shadow-lg cursor-pointer"
+            aria-label="Sign in"
+            style={{ pointerEvents: 'auto' }}
+          >
+            Sign In
+          </button>
+        ) : (
+          <div className="flex gap-2">
+            <button
+              onMouseDown={() => setShowAuth(true)}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-sm font-medium transition-colors shadow-lg cursor-pointer"
+              aria-label="Account"
+              style={{ pointerEvents: 'auto' }}
+            >
+              {currentUser ? `👤 ${currentUser.name}` : 'Account'}
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="text-center mb-6">
           <h1 className="text-4xl font-bold text-emerald-500">StudyTimer</h1>
+          <div className="absolute right-6 top-6">
+            {!user ? (
+              <button
+                onClick={() => {
+                  setShowAuth(true);
+                  setAuthMode('signin');
+                }}
+                className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors"
+              >
+                Sign In
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowAuth(true)}
+                className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors"
+              >
+                Account
+              </button>
+            )}
+          </div>
           {currentGroup && (
             <div className="flex items-center justify-center gap-2 mt-2">
               <span className="text-zinc-400">📚 {currentGroup.name}</span>
               <span className="text-zinc-600">•</span>
-              <span className="text-purple-400">Created by {currentGroup.created_by}</span>
+              <span className="text-purple-400">Created by {currentGroup.created_by_name || currentGroup.created_by}</span>
               <span className="text-zinc-600">•</span>
               <button
                 onClick={copyGroupCode}
@@ -1588,8 +2488,13 @@ export default function Home() {
               </button>
             </div>
           )}
+          {currentUser && (
+            <p className="text-emerald-400 mt-3 font-semibold">
+              ✓ Logged in as: <span className="text-emerald-300">{currentUser.name}</span>
+            </p>
+          )}
           <p className="text-zinc-400 mt-1">
-            Welcome, {userName}! 🎯 Current Streak: {currentStreak} sessions
+            Current Streak: {currentStreak} sessions
           </p>
         </div>
 
@@ -1754,7 +2659,7 @@ export default function Home() {
                       </div>
                       <div className="text-xs text-zinc-400">
                         {useSyncedTimer 
-                          ? `Timer controlled by ${currentGroup?.created_by || 'group creator'}`
+                          ? `Timer controlled by ${currentGroup?.created_by_name || currentGroup?.created_by || 'group creator'}`
                           : 'You control your own timer independently'
                         }
                       </div>

@@ -5,6 +5,69 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+// Auth functions
+export const signUp = async (email: string, password: string) => {
+  try {
+    const redirectUrl = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        emailRedirectTo: redirectUrl,
+      },
+    });
+    if (error) {
+      console.error('SignUp error:', error);
+    }
+    return { data, error };
+  } catch (err) {
+    console.error('SignUp exception:', err);
+    return { data: null, error: err as any };
+  }
+};
+
+export const signIn = async (email: string, password: string) => {
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) {
+      console.error('SignIn error:', error);
+    }
+    return { data, error };
+  } catch (err) {
+    console.error('SignIn exception:', err);
+    return { data: null, error: err as any };
+  }
+};
+
+export const resetPassword = async (email: string) => {
+  try {
+    const redirectUrl = typeof window !== 'undefined' ? `${window.location.origin}?auth=reset` : undefined;
+    const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: redirectUrl,
+    });
+    if (error) {
+      console.error('Reset password error:', error);
+    }
+    return { data, error };
+  } catch (err) {
+    console.error('Reset password exception:', err);
+    return { data: null, error: err as any };
+  }
+};
+
+export const signOut = async () => {
+  const { error } = await supabase.auth.signOut();
+  return { error };
+};
+
+export const getCurrentUser = async () => {
+  const { data: { user } } = await supabase.auth.getUser();
+  return user;
+};
+
 export type StudyGroup = {
   id: string;
   code: string;
@@ -18,6 +81,7 @@ export type StudyGroup = {
 
 export type User = {
   id: string;
+  auth_id: string;
   name: string;
   group_id: string | null;
   status: 'online' | 'focus' | 'break' | 'offline';

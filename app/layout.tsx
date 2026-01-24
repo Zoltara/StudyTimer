@@ -1,5 +1,5 @@
 import './globals.css';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 
 export const metadata: Metadata = {
   title: 'Study Timer',
@@ -11,12 +11,15 @@ export const metadata: Metadata = {
     apple: '/icon.svg',
   },
   manifest: '/manifest.json',
-  themeColor: '#10b981',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
     title: 'Study Timer',
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#10b981',
 };
 
 export default function RootLayout({
