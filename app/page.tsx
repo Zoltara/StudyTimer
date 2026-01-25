@@ -475,8 +475,8 @@ export default function Home() {
           // Only process messages for this group
           if (m.group_id !== currentGroup.id) return;
           
-          // Play notification sound for all messages (not system messages)
-          if (!m.is_system && chatSoundEnabled) {
+          // Play notification sound only for messages from others (not system messages or own messages)
+          if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
             getAudioManager()?.playNotification();
           }
           setMessages((prev) => {
@@ -1058,7 +1058,7 @@ export default function Home() {
       setUseSyncedTimer(true);
       setJoinError('');
       setJoinCode('');
-      setGroupScreen('select');
+      setGroupScreen('lobby');
       console.log('Join complete');
     } catch (e: any) {
       console.error('Join group error:', e);
@@ -1792,80 +1792,6 @@ export default function Home() {
         )}
 
         {/* Name Entry Screen - shows after joining a group */}
-        {currentGroup && (
-          <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
-            <div className="mb-4 text-center">
-              <h2 className="text-2xl font-bold">{currentGroup.name}</h2>
-              <p className="text-zinc-400">📚 {currentGroup.topic}</p>
-            </div>
-            
-            <div className="bg-zinc-800/50 p-4 rounded-xl mb-6">
-              <p className="text-sm text-emerald-400 font-semibold">✅ You've joined this group!</p>
-              <p className="text-xs text-zinc-400 mt-1">Enter your name to start studying</p>
-            </div>
-            
-            <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
-            <input
-              type="text"
-              value={userName}
-              onChange={(e) => {
-                setUserName(e.target.value);
-                setNameError('');
-                setShowNameConfirm(false);
-              }}
-              onKeyDown={(e) => handleKeyPress(e, createUser)}
-              className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
-              placeholder="Your name"
-              autoFocus
-            />
-            {nameError && (
-              <p className="text-red-400 text-sm mb-2">{nameError}</p>
-            )}
-            
-            {showNameConfirm && (
-              <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
-                <p className="text-yellow-200 mb-3">
-                  <strong>{userName}</strong> already exists in this group. Is that you?
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={joinAsExistingUser}
-                    className="flex-1 py-2 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
-                  >
-                    Yes, that's me!
-                  </button>
-                  <button
-                    onClick={rejectExistingUser}
-                    className="flex-1 py-2 rounded-lg font-semibold bg-zinc-600 hover:bg-zinc-500 transition"
-                  >
-                    No, it's not me
-                  </button>
-                </div>
-              </div>
-            )}
-            
-            {!showNameConfirm && (
-              <button
-                onClick={createUser}
-                disabled={!userName.trim()}
-                className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Join & Start Studying
-              </button>
-            )}
-            
-            <button
-              onClick={() => {
-                setCurrentGroup(null);
-                setGroupScreen('select');
-              }}
-              className="w-full py-2 text-zinc-400 hover:text-white mt-4 text-sm"
-            >
-              ← Choose Different Group
-            </button>
-          </div>
-        )}
-
         {groupScreen === 'lobby' && currentGroup && (
           <div className="bg-zinc-900 p-8 rounded-2xl border border-zinc-800 w-full max-w-md">
             <div className="text-center mb-6">
@@ -1876,31 +1802,33 @@ export default function Home() {
               )}
             </div>
             
-            <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
-              <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
-              <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
-                {currentGroup.code}
+            {isGroupCreator && (
+              <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
+                <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
+                <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
+                  {currentGroup.code}
+                </div>
+                
+                {/* QR Code */}
+                <div className="my-4">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentGroup.code)}&bgcolor=27272a&color=10b981`}
+                    alt="QR Code"
+                    className="mx-auto rounded-lg"
+                    width={150}
+                    height={150}
+                  />
+                  <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
+                </div>
+                
+                <button
+                  onClick={copyGroupCode}
+                  className="text-sm text-zinc-400 hover:text-white"
+                >
+                  {showGroupCode ? '✓ Copied!' : '📋 Copy Code'}
+                </button>
               </div>
-              
-              {/* QR Code */}
-              <div className="my-4">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentGroup.code)}&bgcolor=27272a&color=10b981`}
-                  alt="QR Code"
-                  className="mx-auto rounded-lg"
-                  width={150}
-                  height={150}
-                />
-                <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
-              </div>
-              
-              <button
-                onClick={copyGroupCode}
-                className="text-sm text-zinc-400 hover:text-white"
-              >
-                {showGroupCode ? '✓ Copied!' : '📋 Copy Code'}
-              </button>
-            </div>
+            )}
             
             <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
             <input
@@ -2258,31 +2186,33 @@ export default function Home() {
               )}
             </div>
             
-            <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
-              <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
-              <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
-                {currentGroup.code}
+            {isGroupCreator && (
+              <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
+                <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
+                <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
+                  {currentGroup.code}
+                </div>
+                
+                {/* QR Code */}
+                <div className="my-4">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentGroup.code)}&bgcolor=27272a&color=10b981`}
+                    alt="QR Code"
+                    className="mx-auto rounded-lg"
+                    width={150}
+                    height={150}
+                  />
+                  <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
+                </div>
+                
+                <button
+                  onClick={copyGroupCode}
+                  className="text-sm text-zinc-400 hover:text-white"
+                >
+                  {showGroupCode ? '✓ Copied!' : '📋 Copy Code'}
+                </button>
               </div>
-              
-              {/* QR Code */}
-              <div className="my-4">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentGroup.code)}&bgcolor=27272a&color=10b981`}
-                  alt="QR Code"
-                  className="mx-auto rounded-lg"
-                  width={150}
-                  height={150}
-                />
-                <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
-              </div>
-              
-              <button
-                onClick={copyGroupCode}
-                className="text-sm text-zinc-400 hover:text-white"
-              >
-                {showGroupCode ? '✓ Copied!' : '📋 Copy Code'}
-              </button>
-            </div>
+            )}
             
             <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
             <input
@@ -2880,6 +2810,15 @@ export default function Home() {
               </p>
 
               <div className="space-y-2 mb-4">
+                {/* Current user */}
+                <div className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg border border-emerald-600/30">
+                  <span className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    {userName} <span className="text-xs text-zinc-500">(you)</span>
+                  </span>
+                  <span className="text-xs text-zinc-400 capitalize">{timerState === 'idle' ? 'online' : timerState}</span>
+                </div>
+                
                 {friends.length === 0 ? (
                   <p className="text-zinc-500 text-sm">No one else is here yet...</p>
                 ) : (
