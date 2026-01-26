@@ -112,6 +112,14 @@ interface Exam {
   date: Date;
 }
 
+// Helper to format date as DD.MM.YYYY
+const formatDate = (date: Date): string => {
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}.${month}.${year}`;
+};
+
 interface TimerSettings {
   focusTime: number;
   shortBreakTime: number;
@@ -230,6 +238,7 @@ export default function Home() {
   const [showAuth, setShowAuth] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   // Restore user session on mount
   useEffect(() => {
@@ -350,6 +359,14 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [chatSoundEnabled, setChatSoundEnabled] = useState(true);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
 
   // Friends state
   const [friends, setFriends] = useState<Friend[]>([]);
@@ -649,6 +666,21 @@ export default function Home() {
           setTimerState(newTimerState);
         }
       })
+      .on('broadcast', { event: 'streak-update' }, (payload) => {
+        // Update friend's streak in real-time for leaderboard
+        const { userId, streak, userName: updatedUserName } = payload.payload as {
+          userId: string;
+          streak: number;
+          userName: string;
+        };
+        if (userId !== currentUser.id) {
+          setFriends((prev) =>
+            prev.map((f) =>
+              f.id === userId ? { ...f, streak } : f
+            )
+          );
+        }
+      })
       .on('broadcast', { event: 'exam-update' }, () => {
         // Reload exams when someone adds/updates/deletes one
         const reloadExams = async () => {
@@ -695,11 +727,54 @@ export default function Home() {
     // Store the channel ref for broadcasting
     settingsChannelRef.current = settingsChannel;
 
+    // Subscribe to exam changes for this group (database-level real-time)
+    const examsChannel = supabase
+      .channel(`exams-${currentGroup.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'exams', filter: `group_id=eq.${currentGroup.id}` },
+        (payload) => {
+          const e = payload.new as DbExam;
+          if (e.group_id === currentGroup.id) {
+            setExams((prev) => {
+              if (prev.some(exam => exam.id === e.id)) return prev;
+              return [...prev, { id: e.id, name: e.name, date: new Date(e.date) }];
+            });
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'exams', filter: `group_id=eq.${currentGroup.id}` },
+        (payload) => {
+          const e = payload.new as DbExam;
+          if (e.group_id === currentGroup.id) {
+            setExams((prev) =>
+              prev.map((exam) =>
+                exam.id === e.id ? { id: e.id, name: e.name, date: new Date(e.date) } : exam
+              )
+            );
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'exams' },
+        (payload) => {
+          const deletedId = payload.old?.id;
+          if (deletedId) {
+            setExams((prev) => prev.filter((exam) => exam.id !== deletedId));
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
       settingsChannelRef.current = null;
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
+      supabase.removeChannel(examsChannel);
     };
   }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer]);
 
@@ -726,6 +801,15 @@ export default function Home() {
       if (streak !== undefined) updates.streak = streak;
 
       await supabase.from('users').update(updates).eq('id', currentUser.id);
+
+      // Broadcast streak update for real-time leaderboard
+      if (streak !== undefined && settingsChannelRef.current) {
+        settingsChannelRef.current.send({
+          type: 'broadcast',
+          event: 'streak-update',
+          payload: { userId: currentUser.id, streak, userName: currentUser.name },
+        });
+      }
     },
     [currentUser]
   );
@@ -1541,15 +1625,35 @@ export default function Home() {
             </div>
             <div>
               <label className="block text-sm font-medium mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={authLoading}
-                className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                placeholder="••••••••"
-                required
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={authLoading}
+                  className="w-full px-3 py-2 pr-10 bg-zinc-800 border border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  placeholder="••••••••"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 p-1 transition-colors"
+                  tabIndex={-1}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
+                    </svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
             <button
               type="submit"
@@ -2440,7 +2544,7 @@ export default function Home() {
             <div className="flex items-center justify-center gap-2 mt-2">
               <span className="text-zinc-400">📚 {currentGroup.name}</span>
               <span className="text-zinc-600">•</span>
-              <span className="text-purple-400">Created by {currentGroup.created_by_name || currentGroup.created_by}</span>
+              <span className="text-purple-400">Created by {isGroupCreator && currentUser ? currentUser.name : (currentGroup.created_by_name || currentGroup.created_by)}</span>
               <span className="text-zinc-600">•</span>
               <button
                 onClick={copyGroupCode}
@@ -2622,7 +2726,7 @@ export default function Home() {
                       </div>
                       <div className="text-xs text-zinc-400">
                         {useSyncedTimer 
-                          ? `Timer controlled by ${currentGroup?.created_by_name || currentGroup?.created_by || 'group creator'}`
+                          ? `Timer controlled by ${isGroupCreator && currentUser ? currentUser.name : (currentGroup?.created_by_name || 'group creator')}`
                           : 'You control your own timer independently'
                         }
                       </div>
@@ -2786,8 +2890,11 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-96 flex flex-col-reverse">
-                {[...messages].reverse().map((msg) => (
+              <div 
+                ref={chatContainerRef}
+                className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-96 flex flex-col"
+              >
+                {messages.map((msg) => (
                   <div
                     key={msg.id}
                     className={`p-2 rounded-lg ${
@@ -3091,7 +3198,7 @@ export default function Home() {
                                 </div>
                               </div>
                               <div className="text-sm text-zinc-400 flex justify-between">
-                                <span>{exam.date.toLocaleDateString()}</span>
+                                <span>{formatDate(exam.date)}</span>
                                 <span
                                   className={`font-semibold ${
                                     daysUntil <= 3 ? 'text-red-400' : daysUntil <= 7 ? 'text-yellow-400' : 'text-emerald-400'
