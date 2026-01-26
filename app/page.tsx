@@ -398,6 +398,19 @@ export default function Home() {
   // Use smoothProgress for continuous animation, seconds for display
   const progress = timerState === 'idle' ? 1 : smoothProgress;
 
+  // Refs to track current values for use in subscription callbacks
+  const isGroupCreatorRef = useRef(isGroupCreator);
+  const useSyncedTimerRef = useRef(useSyncedTimer);
+  const timerStateRef = useRef(timerState);
+  const chatSoundEnabledRef = useRef(chatSoundEnabled);
+  const userNameRef = useRef(userName);
+
+  useEffect(() => { isGroupCreatorRef.current = isGroupCreator; }, [isGroupCreator]);
+  useEffect(() => { useSyncedTimerRef.current = useSyncedTimer; }, [useSyncedTimer]);
+  useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
+  useEffect(() => { chatSoundEnabledRef.current = chatSoundEnabled; }, [chatSoundEnabled]);
+  useEffect(() => { userNameRef.current = userName; }, [userName]);
+
   // Load initial data and set up realtime subscriptions
   useEffect(() => {
     if (!currentUser || !currentGroup) return;
@@ -408,7 +421,7 @@ export default function Home() {
         .from('messages')
         .select('*')
         .eq('group_id', currentGroup.id)
-        .order('created_at', { ascending: false })
+        .order('created_at', { ascending: true })
         .limit(100);
 
       if (data) {
@@ -502,6 +515,12 @@ export default function Home() {
     loadUsers();
     loadExams();
 
+    // Polling interval for backup real-time sync (every 10 seconds)
+    const pollingInterval = setInterval(() => {
+      loadUsers();
+      loadExams();
+    }, 10000);
+
     // Subscribe to new messages for this group
     const messagesChannel = supabase
       .channel(`messages-${currentGroup.id}`)
@@ -514,7 +533,7 @@ export default function Home() {
           if (m.group_id !== currentGroup.id) return;
           
           // Play notification sound only for messages from others (not system messages or own messages)
-          if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
+          if (!m.is_system && chatSoundEnabledRef.current && m.user_name !== userNameRef.current) {
             getAudioManager()?.playNotification();
           }
           setMessages((prev) => {
@@ -558,7 +577,7 @@ export default function Home() {
         { event: 'INSERT', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
           const u = payload.new as User;
-          if (u.id !== currentUser.id && u.group_id === currentGroup.id && u.name !== userName) {
+          if (u.id !== currentUser.id && u.group_id === currentGroup.id && u.name !== userNameRef.current) {
             // Add new user to friends list (avoid duplicate IDs and names)
             setFriends((prev) => {
               if (prev.some(f => f.id === u.id)) return prev;
@@ -604,14 +623,14 @@ export default function Home() {
         // Only update settings if it's from someone else
         if (changedById !== user?.id) {
           // Only apply settings if non-creator AND using synced timer
-          if (!isGroupCreator && useSyncedTimer) {
+          if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
             setSettings(newSettings);
-            if (timerState === 'idle') {
+            if (timerStateRef.current === 'idle') {
               setSeconds(newSettings.focusTime * 60);
             }
           }
           // Show notification to everyone
-          const suffix = !isGroupCreator && !useSyncedTimer ? ' (you are using own timer)' : '';
+          const suffix = !isGroupCreatorRef.current && !useSyncedTimerRef.current ? ' (you are using own timer)' : '';
           setSettingsWarning(`⚠️ Timer Changed by ${changedByName || 'group member'}${suffix}`);
           // Auto-hide warning after 5 seconds
           setTimeout(() => setSettingsWarning(null), 5000);
@@ -626,9 +645,9 @@ export default function Home() {
           changedByName?: string;
         };
         // Sync timer from group creator (only for non-creators who chose to sync)
-        if (changedById !== user?.id && !isGroupCreator && useSyncedTimer) {
+        if (changedById !== user?.id && !isGroupCreatorRef.current && useSyncedTimerRef.current) {
           const audio = getAudioManager();
-          const prevTimerState = timerState;
+          const prevTimerState = timerStateRef.current;
 
           setTimerState(newTimerState);
           setSeconds(newSeconds);
@@ -661,7 +680,7 @@ export default function Home() {
           timerState: TimerState;
         };
         // Continuous timer sync for non-creators who chose to sync
-        if (!isGroupCreator && useSyncedTimer) {
+        if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
           setSeconds(newSeconds);
           setTimerState(newTimerState);
         }
@@ -771,12 +790,13 @@ export default function Home() {
 
     return () => {
       settingsChannelRef.current = null;
+      clearInterval(pollingInterval);
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
       supabase.removeChannel(examsChannel);
     };
-  }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer]);
+  }, [currentUser, currentGroup, user]);
 
   const addSystemMessage = useCallback(
     async (text: string) => {
