@@ -77,6 +77,7 @@ export type StudyGroup = {
   is_public: boolean;
   created_at: string;
   updated_at?: string;
+  created_by_name?: string;
 };
 
 export type User = {

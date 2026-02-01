@@ -214,7 +214,7 @@ export default function Home() {
 
   // Group state
   const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>(null);
-  const [groupScreen, setGroupScreen] = useState<'select' | 'create' | 'join' | 'lobby'>('select');
+  const [groupScreen, setGroupScreen] = useState<'select' | 'create' | 'join' | 'lobby' | 'browse'>('select');
   const [groupName, setGroupName] = useState('');
   const [groupTopic, setGroupTopic] = useState('');
   const [isPublicGroup, setIsPublicGroup] = useState(true);
@@ -504,9 +504,9 @@ export default function Home() {
 
     // Subscribe to new messages for this group with enhanced error handling
     const messagesChannel = supabase
-      .channel(`messages-${currentGroup.id}-${currentUser.id}`, {
+      .channel(`messages-${currentGroup.id}`, {
         config: {
-          broadcast: { self: true },
+          broadcast: { self: false },
           presence: { key: currentUser.id },
         },
       })
@@ -526,42 +526,13 @@ export default function Home() {
           
           console.log('Processing message:', { messageFrom: m.user_name, currentUser: userName, isSystem: m.is_system });
           
-          // Don't add the message if it's from the current user (already added optimistically)
-          // unless it's a system message
-          if (m.user_name === userName && !m.is_system) {
-            console.log('Updating optimistic message for sender');
-            // Update existing optimistic message with real data
-            setMessages((prev) => prev.map(msg => {
-              // Find temporary message and replace with real one
-              if (msg.user === userName && 
-                  msg.text === m.text && 
-                  msg.id.startsWith('temp-') &&
-                  Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < 30000) {
-                return {
-                  id: m.id,
-                  user: m.user_name,
-                  text: m.text,
-                  isSystem: m.is_system,
-                  timestamp: new Date(m.created_at),
-                };
-              }
-              return msg;
-            }));
-            return;
-          }
-          
-          console.log('Adding message for other users');
-          // Play notification sound only for messages from others (not system messages or own messages)
-          if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
-            getAudioManager()?.playNotification();
-          }
-          
           setMessages((prev) => {
-            // Avoid duplicates and ensure proper ordering
+            // Avoid duplicates
             if (prev.some(msg => msg.id === m.id)) {
               console.log('Duplicate message detected, skipping');
               return prev;
             }
+            
             const newMessage = {
               id: m.id,
               user: m.user_name,
@@ -569,8 +540,15 @@ export default function Home() {
               isSystem: m.is_system,
               timestamp: new Date(m.created_at),
             };
+            
             console.log('Adding new message to list:', newMessage);
-            // Insert in correct chronological order
+            
+            // Play notification sound only for messages from others (not system messages or own messages)
+            if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
+              getAudioManager()?.playNotification();
+            }
+            
+            // Add new message and sort by timestamp
             const newMessages = [...prev, newMessage];
             return newMessages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
           });
@@ -626,7 +604,7 @@ export default function Home() {
 
     // Subscribe to user status changes for this group with enhanced real-time updates
     const usersChannel = supabase
-      .channel(`users-${currentGroup.id}-${currentUser.id}`, {
+      .channel(`users-${currentGroup.id}`, {
         config: {
           broadcast: { self: false },
           presence: { key: currentUser.id },
@@ -752,7 +730,7 @@ export default function Home() {
 
     // Subscribe to timer settings and state changes (broadcast)
     const settingsChannel = supabase
-      .channel(`settings-${currentGroup.id}-${currentUser.id}`, {
+      .channel(`settings-${currentGroup.id}`, {
         config: {
           broadcast: { self: false },
           presence: { key: currentUser.id },
@@ -945,7 +923,7 @@ export default function Home() {
     settingsChannelRef.current = settingsChannel;
 
     // Enhanced presence tracking for real-time user activity
-    const presenceChannel = supabase.channel(`presence-${currentGroup.id}-${currentUser.id}`, {
+    const presenceChannel = supabase.channel(`presence-${currentGroup.id}`, {
       config: {
         presence: { key: currentUser.id },
         broadcast: { self: false },
@@ -1667,20 +1645,9 @@ export default function Home() {
     if (!newMessage.trim() || !currentUser || !currentGroup) return;
 
     const messageText = newMessage.trim();
-    const tempMessageId = `temp-${Date.now()}-${currentUser.id}`;
     
     console.log('Sending message:', { messageText, userName, groupId: currentGroup.id });
     
-    // Immediately show the message in the UI (optimistic update)
-    const optimisticMessage = {
-      id: tempMessageId,
-      user: userName,
-      text: messageText,
-      isSystem: false,
-      timestamp: new Date(),
-    };
-    
-    setMessages((prev) => [...prev, optimisticMessage]);
     setNewMessage('');
 
     try {
@@ -1698,28 +1665,13 @@ export default function Home() {
 
       if (error) {
         console.error('Error sending message:', error);
-        // Remove optimistic message on error
-        setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
         alert('Failed to send message. Please try again.');
       } else if (data) {
         console.log('Message inserted successfully:', data);
-        // Replace optimistic message with real one
-        setMessages((prev) => prev.map(msg => 
-          msg.id === tempMessageId 
-            ? {
-                id: data.id,
-                user: data.user_name,
-                text: data.text,
-                isSystem: data.is_system,
-                timestamp: new Date(data.created_at),
-              }
-            : msg
-        ));
+        // Message will be added via subscription for all users including sender
       }
     } catch (err) {
       console.error('Message send error:', err);
-      // Remove optimistic message on error
-      setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
       alert('Failed to send message. Please try again.');
     }
   };
