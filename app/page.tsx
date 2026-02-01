@@ -516,10 +516,34 @@ export default function Home() {
           // Only process messages for this group
           if (m.group_id !== currentGroup.id) return;
           
+          // Don't add the message if it's from the current user (already added optimistically)
+          // unless it's a system message
+          if (m.user_name === userName && !m.is_system) {
+            // Update existing optimistic message with real data
+            setMessages((prev) => prev.map(msg => {
+              // Find temporary message and replace with real one
+              if (msg.user === userName && 
+                  msg.text === m.text && 
+                  msg.id.startsWith('temp-') &&
+                  Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < 30000) {
+                return {
+                  id: m.id,
+                  user: m.user_name,
+                  text: m.text,
+                  isSystem: m.is_system,
+                  timestamp: new Date(m.created_at),
+                };
+              }
+              return msg;
+            }));
+            return;
+          }
+          
           // Play notification sound only for messages from others (not system messages or own messages)
           if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
             getAudioManager()?.playNotification();
           }
+          
           setMessages((prev) => {
             // Avoid duplicates and ensure proper ordering
             if (prev.some(msg => msg.id === m.id)) return prev;
@@ -787,13 +811,17 @@ export default function Home() {
       })
       .on('broadcast', { event: 'exam-update' }, (payload) => {
         // Reload exams when someone adds/updates/deletes one with optimistic updates
-        const { action, exam: examData } = payload.payload as {
+        const { action, exam: examData, userId } = payload.payload as {
           action?: 'add' | 'update' | 'delete';
           exam?: any;
+          userId?: string;
         };
         
+        // Skip if this is from the current user (already updated optimistically)
+        if (userId === currentUser?.id) return;
+        
         if (action && examData) {
-          // Optimistic update first
+          // Real-time update for other users
           if (action === 'add') {
             setExams((prev) => {
               // Avoid duplicates
@@ -815,8 +843,8 @@ export default function Home() {
           }
         }
         
-        // Then reload from database to ensure consistency
-        const reloadExams = async () => {
+        // Then reload from database to ensure consistency (with delay to show optimistic update first)
+        setTimeout(async () => {
           try {
             const { data, error } = await supabase
               .from('exams')
@@ -834,9 +862,7 @@ export default function Home() {
           } catch (err) {
             console.error('Error reloading exams:', err);
           }
-        };
-        // Delay reload to allow optimistic update to render first
-        setTimeout(reloadExams, 100);
+        }, 100);
       })
       .on('broadcast', { event: 'leaderboard-update' }, (payload) => {
         const { userId, userName: updatedUserName, newStreak, status } = payload.payload as {
@@ -1001,28 +1027,35 @@ export default function Home() {
     async (status: User['status'], streak?: number) => {
       if (!currentUser) return;
 
+      // Immediately update local state for instant UI feedback
+      if (streak !== undefined) {
+        setCurrentStreak(streak);
+      }
+
       const updates: Partial<User> & { updated_at?: string } = { status, updated_at: new Date().toISOString() };
       if (streak !== undefined) {
         updates.streak = streak;
         
         // Broadcast leaderboard update when streak changes
-        if (currentGroup && settingsChannelRef.current) {
-          settingsChannelRef.current.send({
-            type: 'broadcast',
-            event: 'leaderboard-update',
-            payload: {
-              userId: currentUser.id,
-              userName: userName,
-              newStreak: streak,
-              status: status,
-            },
-          });
-        }
+        await broadcastToGroup('leaderboard-update', {
+          userId: currentUser.id,
+          userName: userName,
+          newStreak: streak,
+          status: status,
+        });
       }
 
-      await supabase.from('users').update(updates).eq('id', currentUser.id);
+      try {
+        await supabase.from('users').update(updates).eq('id', currentUser.id);
+      } catch (error) {
+        console.error('Error updating user status:', error);
+        // Revert local state on error if needed
+        if (streak !== undefined) {
+          setCurrentStreak(currentStreak);
+        }
+      }
     },
-    [currentUser, currentGroup, userName]
+    [currentUser, userName, currentStreak, broadcastToGroup]
   );
 
   // Enhanced heartbeat to track user and group activity - updates every 30 seconds for better real-time experience
@@ -1168,20 +1201,14 @@ export default function Home() {
     if (!currentGroup || !isGroupCreator || timerState === 'idle') return;
 
     const broadcastTick = async () => {
-      if (settingsChannelRef.current) {
-        await settingsChannelRef.current.send({
-          type: 'broadcast',
-          event: 'timer-tick',
-          payload: { seconds, timerState },
-        });
-      }
+      await broadcastToGroup('timer-tick', { seconds, timerState });
     };
 
     // Broadcast every second
     const interval = setInterval(broadcastTick, 1000);
 
     return () => clearInterval(interval);
-  }, [currentGroup, isGroupCreator, timerState, seconds]);
+  }, [currentGroup, isGroupCreator, timerState, seconds, broadcastToGroup]);
 
   // Timer logic
   useEffect(() => {
@@ -1619,87 +1646,166 @@ export default function Home() {
   const sendMessage = async () => {
     if (!newMessage.trim() || !currentUser || !currentGroup) return;
 
-    await supabase.from('messages').insert({
-      user_id: currentUser.id,
-      user_name: userName,
-      group_id: currentGroup.id,
-      text: newMessage,
-      is_system: false,
-    });
-
+    const messageText = newMessage.trim();
+    const tempMessageId = `temp-${Date.now()}-${currentUser.id}`;
+    
+    // Immediately show the message in the UI (optimistic update)
+    const optimisticMessage = {
+      id: tempMessageId,
+      user: userName,
+      text: messageText,
+      isSystem: false,
+      timestamp: new Date(),
+    };
+    
+    setMessages((prev) => [...prev, optimisticMessage]);
     setNewMessage('');
+
+    try {
+      // Insert message into database
+      const { data, error } = await supabase.from('messages').insert({
+        user_id: currentUser.id,
+        user_name: userName,
+        group_id: currentGroup.id,
+        text: messageText,
+        is_system: false,
+      }).select().single();
+
+      if (error) {
+        console.error('Error sending message:', error);
+        // Remove optimistic message on error
+        setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
+        alert('Failed to send message. Please try again.');
+      } else if (data) {
+        // Replace optimistic message with real one
+        setMessages((prev) => prev.map(msg => 
+          msg.id === tempMessageId 
+            ? {
+                id: data.id,
+                user: data.user_name,
+                text: data.text,
+                isSystem: data.is_system,
+                timestamp: new Date(data.created_at),
+              }
+            : msg
+        ));
+      }
+    } catch (err) {
+      console.error('Message send error:', err);
+      // Remove optimistic message on error
+      setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
+      alert('Failed to send message. Please try again.');
+    }
   };
 
   const addExam = async () => {
     if (!newExamName.trim() || !newExamDate || !currentUser || !currentGroup) return;
 
-    const { data, error } = await supabase
-      .from('exams')
-      .insert({
-        user_id: currentUser.id,
-        group_id: currentGroup.id,
-        name: newExamName,
-        date: newExamDate,
-      })
-      .select()
-      .single();
+    const tempExamId = `temp-${Date.now()}`;
+    const newExam = { 
+      id: tempExamId, 
+      name: newExamName, 
+      date: new Date(newExamDate) 
+    };
 
-    if (data && !error) {
-      const newExam = { id: data.id, name: data.name, date: new Date(data.date) };
-      setExams((prev) => [...prev, newExam]);
-      
-      // Save to localStorage as backup
-      const updatedExams = [...exams, newExam];
-      localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
-      
-      // Broadcast exam update to group with specific action and data
-      if (settingsChannelRef.current) {
-        await settingsChannelRef.current.send({
-          type: 'broadcast',
-          event: 'exam-update',
-          payload: {
-            action: 'add',
-            exam: { id: data.id, name: data.name, date: data.date },
-          },
+    // Immediately add to UI (optimistic update)
+    setExams((prev) => [...prev, newExam]);
+    
+    // Clear form immediately for better UX
+    const examName = newExamName;
+    const examDate = newExamDate;
+    setNewExamName('');
+    setNewExamDate('');
+
+    try {
+      const { data, error } = await supabase
+        .from('exams')
+        .insert({
+          user_id: currentUser.id,
+          group_id: currentGroup.id,
+          name: examName,
+          date: examDate,
+        })
+        .select()
+        .single();
+
+      if (data && !error) {
+        // Replace optimistic exam with real one
+        setExams((prev) => prev.map(e => 
+          e.id === tempExamId ? { id: data.id, name: data.name, date: new Date(data.date) } : e
+        ));
+        
+        // Save to localStorage as backup
+        const updatedExams = exams.map(e => e.id === tempExamId ? { id: data.id, name: data.name, date: new Date(data.date) } : e);
+        localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
+        
+        // Broadcast exam update to group with specific action and data
+        await broadcastToGroup('exam-update', {
+          action: 'add',
+          exam: { id: data.id, name: data.name, date: data.date },
+          userId: currentUser.id,
         });
+      } else {
+        console.error('Error adding exam:', error);
+        // Remove optimistic exam on error
+        setExams((prev) => prev.filter(e => e.id !== tempExamId));
+        alert('Failed to add exam. Please try again.');
       }
-      
-      setNewExamName('');
-      setNewExamDate('');
+    } catch (err) {
+      console.error('Add exam error:', err);
+      // Remove optimistic exam on error
+      setExams((prev) => prev.filter(e => e.id !== tempExamId));
+      alert('Failed to add exam. Please try again.');
     }
   };
 
   const updateExam = async (examId: string) => {
     if (!editExamName.trim() || !editExamDate || !currentUser || !currentGroup) return;
 
-    const { error } = await supabase
-      .from('exams')
-      .update({ name: editExamName, date: editExamDate })
-      .eq('id', examId);
+    const updatedExam = { id: examId, name: editExamName, date: new Date(editExamDate) };
+    
+    // Immediately update UI (optimistic update)
+    setExams((prev) =>
+      prev.map((e) =>
+        e.id === examId ? updatedExam : e
+      )
+    );
+    
+    const examName = editExamName;
+    const examDate = editExamDate;
+    setEditingExam(null);
+    setEditExamName('');
+    setEditExamDate('');
 
-    if (!error) {
-      const updatedExam = { id: examId, name: editExamName, date: new Date(editExamDate) };
-      setExams((prev) =>
-        prev.map((e) =>
-          e.id === examId ? updatedExam : e
-        )
-      );
-      
-      // Broadcast exam update to group with specific action and data
-      if (settingsChannelRef.current) {
-        await settingsChannelRef.current.send({
-          type: 'broadcast',
-          event: 'exam-update',
-          payload: {
-            action: 'update',
-            exam: { id: examId, name: editExamName, date: editExamDate },
-          },
+    try {
+      const { error } = await supabase
+        .from('exams')
+        .update({ name: examName, date: examDate })
+        .eq('id', examId);
+
+      if (!error) {
+        // Broadcast exam update to group with specific action and data
+        await broadcastToGroup('exam-update', {
+          action: 'update',
+          exam: { id: examId, name: examName, date: examDate },
+          userId: currentUser.id,
         });
+      } else {
+        console.error('Error updating exam:', error);
+        // Revert optimistic update on error
+        const { data } = await supabase.from('exams').select('*').eq('id', examId).single();
+        if (data) {
+          setExams((prev) =>
+            prev.map((e) =>
+              e.id === examId ? { id: data.id, name: data.name, date: new Date(data.date) } : e
+            )
+          );
+        }
+        alert('Failed to update exam. Please try again.');
       }
-      
-      setEditingExam(null);
-      setEditExamName('');
-      setEditExamDate('');
+    } catch (err) {
+      console.error('Update exam error:', err);
+      alert('Failed to update exam. Please try again.');
     }
   };
 
@@ -1707,22 +1813,32 @@ export default function Home() {
     const examToDelete = exams.find(e => e.id === examId);
     if (!examToDelete) return;
     
-    const { error } = await supabase.from('exams').delete().eq('id', examId);
+    // Immediately update UI (optimistic update)
+    setExams((prev) => prev.filter((e) => e.id !== examId));
     
-    if (!error) {
-      setExams((prev) => prev.filter((e) => e.id !== examId));
+    try {
+      const { error } = await supabase.from('exams').delete().eq('id', examId);
       
-      // Broadcast exam update to group with specific action and data
-      if (currentGroup && settingsChannelRef.current) {
-        await settingsChannelRef.current.send({
-          type: 'broadcast',
-          event: 'exam-update',
-          payload: {
+      if (!error) {
+        // Broadcast exam update to group with specific action and data
+        if (currentGroup) {
+          await broadcastToGroup('exam-update', {
             action: 'delete',
             exam: { id: examId, name: examToDelete.name, date: examToDelete.date.toISOString() },
-          },
-        });
+            userId: currentUser?.id,
+          });
+        }
+      } else {
+        console.error('Error deleting exam:', error);
+        // Revert optimistic update on error
+        setExams((prev) => [...prev, examToDelete]);
+        alert('Failed to delete exam. Please try again.');
       }
+    } catch (err) {
+      console.error('Delete exam error:', err);
+      // Revert optimistic update on error
+      setExams((prev) => [...prev, examToDelete]);
+      alert('Failed to delete exam. Please try again.');
     }
   };
 
@@ -1741,16 +1857,12 @@ export default function Home() {
     setSeconds(tempSettings.focusTime * 60);
     setEditingSettings(false);
 
-    // Broadcast settings change to all users in the group using the subscribed channel
-    if (currentGroup && settingsChannelRef.current) {
-      await settingsChannelRef.current.send({
-        type: 'broadcast',
-        event: 'settings-change',
-        payload: {
-          settings: tempSettings,
-          changedById: user?.id,
-          changedByName: userName,
-        },
+    // Broadcast settings change to all users in the group
+    if (currentGroup) {
+      await broadcastToGroup('settings-change', {
+        settings: tempSettings,
+        changedById: user?.id,
+        changedByName: userName,
       });
     }
 
