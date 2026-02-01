@@ -1708,13 +1708,24 @@ export default function Home() {
     console.log('🔴 TESTING REAL-TIME SYSTEM');
     console.log('Current User:', { id: currentUser?.id, name: userName });
     console.log('Current Group:', { id: currentGroup?.id, name: currentGroup?.name });
-    console.log('All Messages:', messages);
-    console.log('Messages Count:', messages.length);
     
     if (currentUser && currentGroup) {
-      console.log('✅ Real-time setup looks good. Try sending a message!');
-    } else {
-      console.log('❌ Missing currentUser or currentGroup');
+      // Test broadcast channel
+      const testChannel = supabase.channel('test-channel');
+      testChannel.on('broadcast', { event: 'test' }, (payload) => {
+        console.log('✅ BROADCAST WORKING:', payload);
+        alert('Real-time broadcast is working!');
+      }).subscribe((status) => {
+        console.log('Test channel status:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('📡 Broadcasting test message...');
+          testChannel.send({
+            type: 'broadcast',
+            event: 'test',
+            payload: { message: 'Real-time test', user: userName }
+          });
+        }
+      });
     }
   };
 
