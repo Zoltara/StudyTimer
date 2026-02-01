@@ -506,7 +506,7 @@ export default function Home() {
     const messagesChannel = supabase
       .channel(`messages-${currentGroup.id}`, {
         config: {
-          broadcast: { self: false },
+          broadcast: { self: true },
           presence: { key: currentUser.id },
         },
       })
@@ -527,6 +527,36 @@ export default function Home() {
           console.log('Processing message:', { messageFrom: m.user_name, currentUser: userName, isSystem: m.is_system });
           
           setMessages((prev) => {
+            // Check if this is from current user and we have a temp message to replace
+            if (m.user_name === userName && !m.is_system) {
+              // Try to replace optimistic message first
+              const hasOptimistic = prev.some(msg => 
+                msg.user === userName && 
+                msg.text === m.text && 
+                msg.id.startsWith('temp-') &&
+                Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < 10000
+              );
+              
+              if (hasOptimistic) {
+                console.log('Replacing optimistic message with real one');
+                return prev.map(msg => {
+                  if (msg.user === userName && 
+                      msg.text === m.text && 
+                      msg.id.startsWith('temp-') &&
+                      Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < 10000) {
+                    return {
+                      id: m.id,
+                      user: m.user_name,
+                      text: m.text,
+                      isSystem: m.is_system,
+                      timestamp: new Date(m.created_at),
+                    };
+                  }
+                  return msg;
+                });
+              }
+            }
+            
             // Avoid duplicates
             if (prev.some(msg => msg.id === m.id)) {
               console.log('Duplicate message detected, skipping');
@@ -1645,9 +1675,20 @@ export default function Home() {
     if (!newMessage.trim() || !currentUser || !currentGroup) return;
 
     const messageText = newMessage.trim();
+    const tempMessageId = `temp-${Date.now()}-${currentUser.id}`;
     
     console.log('Sending message:', { messageText, userName, groupId: currentGroup.id });
     
+    // Immediately show the message in the UI (optimistic update for instant feedback)
+    const optimisticMessage = {
+      id: tempMessageId,
+      user: userName,
+      text: messageText,
+      isSystem: false,
+      timestamp: new Date(),
+    };
+    
+    setMessages((prev) => [...prev, optimisticMessage]);
     setNewMessage('');
 
     try {
@@ -1665,13 +1706,28 @@ export default function Home() {
 
       if (error) {
         console.error('Error sending message:', error);
+        // Remove optimistic message on error
+        setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
         alert('Failed to send message. Please try again.');
       } else if (data) {
         console.log('Message inserted successfully:', data);
-        // Message will be added via subscription for all users including sender
+        // Replace optimistic message with real one
+        setMessages((prev) => prev.map(msg => 
+          msg.id === tempMessageId 
+            ? {
+                id: data.id,
+                user: data.user_name,
+                text: data.text,
+                isSystem: data.is_system,
+                timestamp: new Date(data.created_at),
+              }
+            : msg
+        ));
       }
     } catch (err) {
       console.error('Message send error:', err);
+      // Remove optimistic message on error
+      setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
       alert('Failed to send message. Please try again.');
     }
   };
