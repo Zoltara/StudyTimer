@@ -398,6 +398,39 @@ export default function Home() {
   // Use smoothProgress for continuous animation, seconds for display
   const progress = timerState === 'idle' ? 1 : smoothProgress;
 
+  // Polling fallback for when real-time fails
+  useEffect(() => {
+    if (!currentUser || !currentGroup) return;
+    
+    const pollForMessages = async () => {
+      try {
+        const { data } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('group_id', currentGroup.id)
+          .order('created_at', { ascending: true })
+          .limit(100);
+          
+        if (data) {
+          setMessages(data.map((m: DbMessage) => ({
+            id: m.id,
+            user: m.user_name,
+            text: m.text,
+            isSystem: m.is_system,
+            timestamp: new Date(m.created_at),
+          })));
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    };
+    
+    // Poll every 2 seconds
+    const interval = setInterval(pollForMessages, 2000);
+    
+    return () => clearInterval(interval);
+  }, [currentUser, currentGroup]);
+
   // Load initial data and set up realtime subscriptions
   useEffect(() => {
     if (!currentUser || !currentGroup) return;

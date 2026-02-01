@@ -3,7 +3,28 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  realtime: {
+    params: {
+      eventsPerSecond: 10,
+    },
+  },
+});
+
+// Polling-based message system as fallback
+export const pollMessages = async (groupId: string, lastMessageId?: string) => {
+  const query = supabase
+    .from('messages')
+    .select('*')
+    .eq('group_id', groupId)
+    .order('created_at', { ascending: true });
+    
+  if (lastMessageId) {
+    query.gt('id', lastMessageId);
+  }
+  
+  return query.limit(50);
+};
 
 // Auth functions
 export const signUp = async (email: string, password: string) => {
