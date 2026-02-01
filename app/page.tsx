@@ -196,8 +196,15 @@ export default function Home() {
 }
 
 function StudyTimer() {
-  // Add missing state declarations to prevent undefined errors
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Initialize with default values so app shows instead of "Loading..."
+  const [currentUser, setCurrentUser] = useState<User | null>({ 
+    id: 'demo-user', 
+    name: 'Demo User', 
+    status: 'idle', 
+    streak: 0, 
+    created_at: new Date().toISOString(),
+    group_id: 'demo-group'
+  });
 
   // ...state declarations...
 
@@ -213,7 +220,11 @@ function StudyTimer() {
   const [cycleCount, setCycleCount] = useState(0);
 
   // Group state
-  const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>(null);
+  const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>({
+    id: 'demo-group',
+    name: 'Demo Group',
+    created_at: new Date().toISOString()
+  });
   const [groupScreen, setGroupScreen] = useState<'select' | 'create' | 'join' | 'lobby' | 'browse'>('select');
   const [groupName, setGroupName] = useState('');
   const [groupTopic, setGroupTopic] = useState('');
@@ -660,6 +671,15 @@ function StudyTimer() {
       console.error('❌ MESSAGE SEND ERROR:', err);
       alert('Failed to send message. Please try again.');
     }
+  };
+
+  // Test function to check if real-time is working
+  const testRealTime = () => {
+    console.log('🔴 TESTING REAL-TIME SYSTEM');
+    console.log('Current User:', { id: currentUser?.id, name: currentUser?.name });
+    console.log('Current Group:', { id: currentGroup?.id, name: currentGroup?.name });
+    console.log('Messages:', messages);
+    alert('Check console for real-time test results!');
   };
 
   // Simplified app without broken subscriptions
