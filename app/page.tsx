@@ -425,8 +425,9 @@ export default function Home() {
       }
     };
     
-    // Poll every 2 seconds
-    const interval = setInterval(pollForMessages, 2000);
+    // Poll immediately and every 1 second
+    pollForMessages();
+    const interval = setInterval(pollForMessages, 1000);
     
     return () => clearInterval(interval);
   }, [currentUser, currentGroup]);
@@ -535,18 +536,8 @@ export default function Home() {
     loadUsers();
     loadExams();
 
-    // Subscribe to new messages for this group - MAXIMUM SIMPLICITY
-    console.log('🔴 SETTING UP MESSAGE SUBSCRIPTION FOR GROUP:', currentGroup.id);
-    const messagesChannel = supabase
-      .channel(`messages-${currentGroup.id}`)
-      .on(
-        'postgres_changes',
-        { 
-          event: 'INSERT', 
-          schema: 'public', 
-          table: 'messages', 
-          filter: `group_id=eq.${currentGroup.id}` 
-        },
+    // Real-time disabled - using polling only
+    console.log('📊 Using polling for group:', currentGroup.id);
         (payload) => {
           console.log('🔴 MESSAGE SUBSCRIPTION TRIGGERED 🔴');
           console.log('Raw payload:', payload);
