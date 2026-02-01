@@ -245,7 +245,7 @@ function StudyTimer() {
           const { data: existingUser } = await supabase
             .from('users')
             .select('*')
-            .eq('id', session.user.id)
+            .eq('auth_id', session.user.id)
             .single();
             
           if (existingUser) {
@@ -267,12 +267,11 @@ function StudyTimer() {
             const { data: newUser, error } = await supabase
               .from('users')
               .insert({
-                id: session.user.id,
+                auth_id: session.user.id,
                 name: session.user.email?.split('@')[0] || 'User', // Use email prefix as default name
-                email: session.user.email,
                 status: 'online',
                 streak: 0,
-                total_focus_time: 0
+                sessions_today: 0
               })
               .select()
               .single();
