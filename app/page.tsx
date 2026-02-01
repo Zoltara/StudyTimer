@@ -892,6 +892,7 @@ export default function Home() {
           }
         }
       })
+      .on('broadcast', { event: 'group-deleted' }, (payload) => {
         const { groupName, deletedBy } = payload.payload as {
           groupName: string;
           deletedBy: string;
@@ -986,7 +987,7 @@ export default function Home() {
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
     };
-  }, [currentUser, userName, timerState, isGroupCreator]);
+  }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer, currentStreak, chatSoundEnabled, currentGroup, user]);
 
   // Enhanced broadcast function using realtime manager
   const broadcastToGroup = useCallback(async (event: string, payload: any) => {
