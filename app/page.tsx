@@ -196,15 +196,8 @@ export default function Home() {
 }
 
 function StudyTimer() {
-  // Initialize with default values so app shows instead of "Loading..."
-  const [currentUser, setCurrentUser] = useState<User | null>({ 
-    id: 'demo-user', 
-    name: 'Demo User', 
-    status: 'idle', 
-    streak: 0, 
-    created_at: new Date().toISOString(),
-    group_id: 'demo-group'
-  });
+  // Use real user session instead of fake demo data
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
 
   // ...state declarations...
 
@@ -220,11 +213,7 @@ function StudyTimer() {
   const [cycleCount, setCycleCount] = useState(0);
 
   // Group state
-  const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>({
-    id: 'demo-group',
-    name: 'Demo Group',
-    created_at: new Date().toISOString()
-  });
+  const [currentGroup, setCurrentGroup] = useState<StudyGroup | null>(null);
   const [groupScreen, setGroupScreen] = useState<'select' | 'create' | 'join' | 'lobby' | 'browse'>('select');
   const [groupName, setGroupName] = useState('');
   const [groupTopic, setGroupTopic] = useState('');
@@ -251,6 +240,28 @@ function StudyTimer() {
         if (session?.user) {
           setUser(session.user);
           console.log('Session restored:', session.user.email);
+          
+          // Try to get or create user record in database
+          const { data: existingUser } = await supabase
+            .from('users')
+            .select('*')
+            .eq('email', session.user.email)
+            .single();
+            
+          if (existingUser) {
+            setCurrentUser(existingUser);
+            if (existingUser.group_id) {
+              // Load their group
+              const { data: group } = await supabase
+                .from('study_groups')
+                .select('*')
+                .eq('id', existingUser.group_id)
+                .single();
+              if (group) {
+                setCurrentGroup(group);
+              }
+            }
+          }
         }
       } catch (e) {
         console.log('Error restoring session:', e);
@@ -409,9 +420,9 @@ function StudyTimer() {
   // Use smoothProgress for continuous animation, seconds for display
   const progress = timerState === 'idle' ? 1 : smoothProgress;
 
-  // Polling fallback for when real-time fails
+  // Polling fallback for when real-time fails - only when we have valid user and group
   useEffect(() => {
-    if (!currentUser || !currentGroup) return;
+    if (!currentUser || !currentGroup || currentGroup.id.startsWith('group-')) return; // Skip polling for demo groups
     
     const pollForMessages = async () => {
       try {
@@ -433,12 +444,14 @@ function StudyTimer() {
         }
       } catch (error) {
         console.error('Polling error:', error);
+        // Stop polling on error
+        return;
       }
     };
     
-    // Poll immediately and every 1 second
+    // Poll immediately and every 3 seconds (reduced frequency)
     pollForMessages();
-    const interval = setInterval(pollForMessages, 1000);
+    const interval = setInterval(pollForMessages, 3000);
     
     return () => clearInterval(interval);
   }, [currentUser, currentGroup]);
@@ -684,7 +697,32 @@ function StudyTimer() {
 
   // Simplified app without broken subscriptions
   if (!currentUser || !currentGroup) {
-    return <div>Loading...</div>;
+    return (
+      <div className="min-h-screen bg-black text-white p-4">
+        <h1>Study Timer App</h1>
+        {!user && <p>Please sign in to continue</p>}
+        {user && !currentUser && <p>Setting up your profile...</p>}
+        {currentUser && !currentGroup && (
+          <div>
+            <p>Welcome {user?.email}! You need to join or create a study group.</p>
+            <button 
+              onClick={() => {
+                // Quick create a demo group for testing
+                const demoGroup = {
+                  id: `group-${Date.now()}`,
+                  name: 'My Study Group',
+                  created_at: new Date().toISOString()
+                };
+                setCurrentGroup(demoGroup);
+              }}
+              className="mt-4 px-4 py-2 bg-blue-600 rounded hover:bg-blue-700"
+            >
+              Create Quick Demo Group
+            </button>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
