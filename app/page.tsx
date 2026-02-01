@@ -359,6 +359,14 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [chatSoundEnabled, setChatSoundEnabled] = useState(true);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
 
   // Friends state
   const [friends, setFriends] = useState<Friend[]>([]);
@@ -496,11 +504,10 @@ export default function Home() {
 
     // Subscribe to new messages for this group with enhanced error handling
     const messagesChannel = supabase
-      .channel(`messages-${currentGroup.id}`, {
+      .channel(`messages-${currentGroup.id}-${currentUser.id}`, {
         config: {
-          presence: {
-            key: `user-${currentUser.id}`,
-          },
+          broadcast: { self: true },
+          presence: { key: currentUser.id },
         },
       })
       .on(
@@ -512,13 +519,17 @@ export default function Home() {
           filter: `group_id=eq.${currentGroup.id}` 
         },
         (payload) => {
+          console.log('Message received via subscription:', payload);
           const m = payload.new as DbMessage;
           // Only process messages for this group
           if (m.group_id !== currentGroup.id) return;
           
+          console.log('Processing message:', { messageFrom: m.user_name, currentUser: userName, isSystem: m.is_system });
+          
           // Don't add the message if it's from the current user (already added optimistically)
           // unless it's a system message
           if (m.user_name === userName && !m.is_system) {
+            console.log('Updating optimistic message for sender');
             // Update existing optimistic message with real data
             setMessages((prev) => prev.map(msg => {
               // Find temporary message and replace with real one
@@ -539,6 +550,7 @@ export default function Home() {
             return;
           }
           
+          console.log('Adding message for other users');
           // Play notification sound only for messages from others (not system messages or own messages)
           if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
             getAudioManager()?.playNotification();
@@ -546,7 +558,10 @@ export default function Home() {
           
           setMessages((prev) => {
             // Avoid duplicates and ensure proper ordering
-            if (prev.some(msg => msg.id === m.id)) return prev;
+            if (prev.some(msg => msg.id === m.id)) {
+              console.log('Duplicate message detected, skipping');
+              return prev;
+            }
             const newMessage = {
               id: m.id,
               user: m.user_name,
@@ -554,6 +569,7 @@ export default function Home() {
               isSystem: m.is_system,
               timestamp: new Date(m.created_at),
             };
+            console.log('Adding new message to list:', newMessage);
             // Insert in correct chronological order
             const newMessages = [...prev, newMessage];
             return newMessages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -610,11 +626,10 @@ export default function Home() {
 
     // Subscribe to user status changes for this group with enhanced real-time updates
     const usersChannel = supabase
-      .channel(`users-${currentGroup.id}`, {
+      .channel(`users-${currentGroup.id}-${currentUser.id}`, {
         config: {
-          presence: {
-            key: `user-${currentUser.id}`,
-          },
+          broadcast: { self: false },
+          presence: { key: currentUser.id },
         },
       })
       .on(
@@ -737,7 +752,12 @@ export default function Home() {
 
     // Subscribe to timer settings and state changes (broadcast)
     const settingsChannel = supabase
-      .channel(`settings-${currentGroup.id}`)
+      .channel(`settings-${currentGroup.id}-${currentUser.id}`, {
+        config: {
+          broadcast: { self: false },
+          presence: { key: currentUser.id },
+        },
+      })
       .on('broadcast', { event: 'settings-change' }, (payload) => {
         const { settings: newSettings, changedById, changedByName } = payload.payload as {
           settings: TimerSettings;
@@ -925,11 +945,10 @@ export default function Home() {
     settingsChannelRef.current = settingsChannel;
 
     // Enhanced presence tracking for real-time user activity
-    const presenceChannel = supabase.channel(`presence-${currentGroup.id}`, {
+    const presenceChannel = supabase.channel(`presence-${currentGroup.id}-${currentUser.id}`, {
       config: {
-        presence: {
-          key: `user-${currentUser.id}`,
-        },
+        presence: { key: currentUser.id },
+        broadcast: { self: false },
       },
     });
 
@@ -1650,6 +1669,8 @@ export default function Home() {
     const messageText = newMessage.trim();
     const tempMessageId = `temp-${Date.now()}-${currentUser.id}`;
     
+    console.log('Sending message:', { messageText, userName, groupId: currentGroup.id });
+    
     // Immediately show the message in the UI (optimistic update)
     const optimisticMessage = {
       id: tempMessageId,
@@ -1664,6 +1685,7 @@ export default function Home() {
 
     try {
       // Insert message into database
+      console.log('Inserting message to database...');
       const { data, error } = await supabase.from('messages').insert({
         user_id: currentUser.id,
         user_name: userName,
@@ -1672,12 +1694,15 @@ export default function Home() {
         is_system: false,
       }).select().single();
 
+      console.log('Database insert result:', { data, error });
+
       if (error) {
         console.error('Error sending message:', error);
         // Remove optimistic message on error
         setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
         alert('Failed to send message. Please try again.');
       } else if (data) {
+        console.log('Message inserted successfully:', data);
         // Replace optimistic message with real one
         setMessages((prev) => prev.map(msg => 
           msg.id === tempMessageId 
@@ -3230,8 +3255,11 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-96 flex flex-col-reverse">
-                {[...messages].reverse().map((msg) => (
+              <div 
+                ref={chatContainerRef}
+                className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-96 flex flex-col"
+              >
+                {messages.map((msg) => (
                   <div
                     key={msg.id}
                     className={`p-2 rounded-lg ${
