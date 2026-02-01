@@ -502,14 +502,10 @@ export default function Home() {
     loadUsers();
     loadExams();
 
-    // Subscribe to new messages for this group with enhanced error handling
+    // Subscribe to new messages for this group - MAXIMUM SIMPLICITY
+    console.log('🔴 SETTING UP MESSAGE SUBSCRIPTION FOR GROUP:', currentGroup.id);
     const messagesChannel = supabase
-      .channel(`messages-${currentGroup.id}`, {
-        config: {
-          broadcast: { self: true },
-          presence: { key: currentUser.id },
-        },
-      })
+      .channel(`messages-${currentGroup.id}`)
       .on(
         'postgres_changes',
         { 
@@ -519,47 +515,39 @@ export default function Home() {
           filter: `group_id=eq.${currentGroup.id}` 
         },
         (payload) => {
-          console.log('Message received via subscription:', payload);
+          console.log('🔴 MESSAGE SUBSCRIPTION TRIGGERED 🔴');
+          console.log('Raw payload:', payload);
+          console.log('Event type:', payload.eventType);
+          console.log('Schema:', payload.schema);
+          console.log('Table:', payload.table);
+          console.log('Current user:', userName);
+          console.log('Current group ID:', currentGroup.id);
+          
           const m = payload.new as DbMessage;
+          console.log('Parsed message data:', m);
+          
           // Only process messages for this group
-          if (m.group_id !== currentGroup.id) return;
+          if (m.group_id !== currentGroup.id) {
+            console.log('❌ WRONG GROUP - Message is for group', m.group_id, 'but we are in group', currentGroup.id);
+            return;
+          }
           
-          console.log('Processing message:', { messageFrom: m.user_name, currentUser: userName, isSystem: m.is_system });
+          console.log('✅ CORRECT GROUP - Processing message for all users');
+          console.log('Message details:', {
+            messageId: m.id,
+            from: m.user_name,
+            text: m.text,
+            currentUser: userName,
+            isFromCurrentUser: m.user_name === userName
+          });
           
+          // Simple approach: Add ALL messages for ALL users, let duplicate check handle it
           setMessages((prev) => {
-            // Check if this is from current user and we have a temp message to replace
-            if (m.user_name === userName && !m.is_system) {
-              // Try to replace optimistic message first
-              const hasOptimistic = prev.some(msg => 
-                msg.user === userName && 
-                msg.text === m.text && 
-                msg.id.startsWith('temp-') &&
-                Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < 10000
-              );
-              
-              if (hasOptimistic) {
-                console.log('Replacing optimistic message with real one');
-                return prev.map(msg => {
-                  if (msg.user === userName && 
-                      msg.text === m.text && 
-                      msg.id.startsWith('temp-') &&
-                      Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < 10000) {
-                    return {
-                      id: m.id,
-                      user: m.user_name,
-                      text: m.text,
-                      isSystem: m.is_system,
-                      timestamp: new Date(m.created_at),
-                    };
-                  }
-                  return msg;
-                });
-              }
-            }
+            console.log('Current messages count before adding:', prev.length);
             
-            // Avoid duplicates
+            // Check for duplicates by ID only
             if (prev.some(msg => msg.id === m.id)) {
-              console.log('Duplicate message detected, skipping');
+              console.log('⚠️ Message already exists, skipping duplicate:', m.id);
               return prev;
             }
             
@@ -571,16 +559,19 @@ export default function Home() {
               timestamp: new Date(m.created_at),
             };
             
-            console.log('Adding new message to list:', newMessage);
+            console.log('✅ ADDING NEW MESSAGE TO UI:', newMessage);
+            console.log('New messages count will be:', prev.length + 1);
             
-            // Play notification sound only for messages from others (not system messages or own messages)
+            // Play sound for messages from others
             if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
+              console.log('🔊 Playing notification sound for message from:', m.user_name);
               getAudioManager()?.playNotification();
             }
             
-            // Add new message and sort by timestamp
-            const newMessages = [...prev, newMessage];
-            return newMessages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            // Add and sort
+            const updatedMessages = [...prev, newMessage].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            console.log('Messages after sorting:', updatedMessages.length, 'total');
+            return updatedMessages;
           });
         }
       )
@@ -618,17 +609,18 @@ export default function Home() {
         }
       )
       .subscribe((status, err) => {
+        console.log('🔴 MESSAGES CHANNEL STATUS:', status, 'for group:', currentGroup.id, 'user:', userName);
         if (status === 'SUBSCRIBED') {
-          console.log('Messages channel subscribed successfully');
+          console.log('✅ Messages channel subscribed successfully for group:', currentGroup.id);
         }
         if (status === 'CHANNEL_ERROR') {
-          console.error('Messages channel error:', err);
+          console.error('❌ Messages channel error:', err);
         }
         if (status === 'TIMED_OUT') {
-          console.warn('Messages channel timed out, attempting to reconnect...');
+          console.warn('⏰ Messages channel timed out, attempting to reconnect...');
         }
         if (status === 'CLOSED') {
-          console.log('Messages channel closed');
+          console.log('🔒 Messages channel closed');
         }
       });
 
@@ -947,7 +939,9 @@ export default function Home() {
         setIsGroupCreator(false);
         setUseSyncedTimer(true);
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log('🔴 MESSAGES SUBSCRIPTION STATUS:', status, 'for group:', currentGroup.id);
+      });
     
     // Store the channel ref for broadcasting
     settingsChannelRef.current = settingsChannel;
@@ -1675,25 +1669,18 @@ export default function Home() {
     if (!newMessage.trim() || !currentUser || !currentGroup) return;
 
     const messageText = newMessage.trim();
-    const tempMessageId = `temp-${Date.now()}-${currentUser.id}`;
     
-    console.log('Sending message:', { messageText, userName, groupId: currentGroup.id });
+    console.log('🔴 SENDING MESSAGE:', { 
+      messageText, 
+      userName, 
+      groupId: currentGroup.id,
+      userId: currentUser.id 
+    });
     
-    // Immediately show the message in the UI (optimistic update for instant feedback)
-    const optimisticMessage = {
-      id: tempMessageId,
-      user: userName,
-      text: messageText,
-      isSystem: false,
-      timestamp: new Date(),
-    };
-    
-    setMessages((prev) => [...prev, optimisticMessage]);
     setNewMessage('');
 
     try {
-      // Insert message into database
-      console.log('Inserting message to database...');
+      // Insert message into database - NO optimistic updates, let subscription handle everything
       const { data, error } = await supabase.from('messages').insert({
         user_id: currentUser.id,
         user_name: userName,
@@ -1702,33 +1689,32 @@ export default function Home() {
         is_system: false,
       }).select().single();
 
-      console.log('Database insert result:', { data, error });
-
       if (error) {
-        console.error('Error sending message:', error);
-        // Remove optimistic message on error
-        setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
+        console.error('❌ MESSAGE SEND FAILED:', error);
         alert('Failed to send message. Please try again.');
-      } else if (data) {
-        console.log('Message inserted successfully:', data);
-        // Replace optimistic message with real one
-        setMessages((prev) => prev.map(msg => 
-          msg.id === tempMessageId 
-            ? {
-                id: data.id,
-                user: data.user_name,
-                text: data.text,
-                isSystem: data.is_system,
-                timestamp: new Date(data.created_at),
-              }
-            : msg
-        ));
+      } else {
+        console.log('✅ MESSAGE SENT TO DATABASE:', data);
+        console.log('🔄 Waiting for subscription to trigger...');
+        // Message will appear via subscription for ALL users including sender
       }
     } catch (err) {
-      console.error('Message send error:', err);
-      // Remove optimistic message on error
-      setMessages((prev) => prev.filter(msg => msg.id !== tempMessageId));
+      console.error('❌ MESSAGE SEND ERROR:', err);
       alert('Failed to send message. Please try again.');
+    }
+  };
+
+  // Test function to check if real-time is working
+  const testRealTime = () => {
+    console.log('🔴 TESTING REAL-TIME SYSTEM');
+    console.log('Current User:', { id: currentUser?.id, name: userName });
+    console.log('Current Group:', { id: currentGroup?.id, name: currentGroup?.name });
+    console.log('All Messages:', messages);
+    console.log('Messages Count:', messages.length);
+    
+    if (currentUser && currentGroup) {
+      console.log('✅ Real-time setup looks good. Try sending a message!');
+    } else {
+      console.log('❌ Missing currentUser or currentGroup');
     }
   };
 
@@ -3298,6 +3284,13 @@ export default function Home() {
                   className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 transition"
                 >
                   Send
+                </button>
+                <button
+                  onClick={testRealTime}
+                  className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 transition text-xs"
+                  title="Test if real-time messaging is working (check console)"
+                >
+                  Test RT
                 </button>
               </div>
             </div>
