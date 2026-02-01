@@ -986,7 +986,7 @@ export default function Home() {
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
     };
-  }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer]);
+  }, [currentUser, userName, timerState, isGroupCreator]);
 
   // Enhanced broadcast function using realtime manager
   const broadcastToGroup = useCallback(async (event: string, payload: any) => {
