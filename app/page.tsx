@@ -241,11 +241,11 @@ function StudyTimer() {
           setUser(session.user);
           console.log('Session restored:', session.user.email);
           
-          // Try to get or create user record in database
+          // Try to get user record by auth user id
           const { data: existingUser } = await supabase
             .from('users')
             .select('*')
-            .eq('email', session.user.email)
+            .eq('id', session.user.id)
             .single();
             
           if (existingUser) {
@@ -260,6 +260,28 @@ function StudyTimer() {
               if (group) {
                 setCurrentGroup(group);
               }
+            }
+          } else {
+            // Create user record for authenticated user
+            console.log('Creating user record for new authenticated user...');
+            const { data: newUser, error } = await supabase
+              .from('users')
+              .insert({
+                id: session.user.id,
+                name: session.user.email?.split('@')[0] || 'User', // Use email prefix as default name
+                email: session.user.email,
+                status: 'online',
+                streak: 0,
+                total_focus_time: 0
+              })
+              .select()
+              .single();
+              
+            if (newUser && !error) {
+              setCurrentUser(newUser);
+              console.log('User record created:', newUser);
+            } else {
+              console.error('Error creating user record:', error);
             }
           }
         }
@@ -456,118 +478,125 @@ function StudyTimer() {
     return () => clearInterval(interval);
   }, [currentUser, currentGroup]);
 
-  // Load initial data and set up realtime subscriptions
+  // DISABLED - Load initial data and set up realtime subscriptions
+  // useEffect(() => {
+  //   if (!currentUser || !currentGroup) return;
+
+  //   // Load messages for this group
+  //   const loadMessages = async () => {
+  //     const { data } = await supabase
+  //       .from('messages')
+  //       .select('*')
+  //       .eq('group_id', currentGroup.id)
+  //       .order('created_at', { ascending: false })
+  //       .limit(100);
+
+  //     if (data) {
+  //       setMessages(
+  //         data.map((m: DbMessage) => ({
+  //           id: m.id,
+  //           user: m.user_name,
+  //           text: m.text,
+  //           isSystem: m.is_system,
+  //           timestamp: new Date(m.created_at),
+
+
+  // Load initial data when user and group are available
   useEffect(() => {
-    if (!currentUser || !currentGroup) return;
+    if (!currentUser || !currentGroup || !user) {
+      console.log('⏳ Waiting for user and group to load...');
+      return;
+    }
 
-    // Load messages for this group
-    const loadMessages = async () => {
-      const { data } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('group_id', currentGroup.id)
-        .order('created_at', { ascending: false })
-        .limit(100);
+    console.log('📊 Loading data for authenticated user:', user.email);
 
-      if (data) {
-        setMessages(
-          data.map((m: DbMessage) => ({
-            id: m.id,
-            user: m.user_name,
-            text: m.text,
-            isSystem: m.is_system,
-            timestamp: new Date(m.created_at),
-          }))
-        );
-      }
-    };
-
-    // Load all users in this group
+    // Load users in this group
     const loadUsers = async () => {
-      const { data } = await supabase
-        .from('users')
-        .select('*')
-        .eq('group_id', currentGroup.id)
-        .order('created_at', { ascending: true });
-      if (data && data.length > 0) {
-        // Filter out users offline for more than 10 minutes
-        const now = new Date();
-        const activeUsers = data.filter((u: User & { updated_at?: string }) => {
-          if (u.id === currentUser.id) return false;
-          if (u.name === userName) return false; // Filter out users with same name as current user
-          if (u.status !== 'offline') return true;
-          const updatedAt = new Date(u.updated_at || u.created_at);
-          const minutesOffline = (now.getTime() - updatedAt.getTime()) / (1000 * 60);
-          return minutesOffline < 10;
-        });
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('group_id', currentGroup.id)
+          .order('created_at', { ascending: true });
         
-        // Remove duplicate names, keeping the most recently updated user
-        const uniqueByName = activeUsers.reduce((acc: (User & { updated_at?: string })[], user: User & { updated_at?: string }) => {
-          const existingIndex = acc.findIndex(u => u.name === user.name);
-          if (existingIndex === -1) {
-            acc.push(user);
-          } else {
-            // Keep the more recently updated one
-            const existingUpdated = new Date(acc[existingIndex].updated_at || acc[existingIndex].created_at);
-            const currentUpdated = new Date(user.updated_at || user.created_at);
-            if (currentUpdated > existingUpdated) {
-              acc[existingIndex] = user;
-            }
-          }
-          return acc;
-        }, []);
-        
-        setAllUsers(uniqueByName);
-        setFriends(
-          uniqueByName.map((u: User & { updated_at?: string }) => ({
-            id: u.id,
-            name: u.name,
-            status: u.status,
-            streak: u.streak,
-            lastSeen: new Date(u.updated_at || u.created_at),
-          }))
-        );
+        if (error) {
+          console.error('Error loading users:', error);
+          return;
+        }
+
+        if (data && data.length > 0) {
+          // Filter out users offline for more than 10 minutes
+          const now = new Date();
+          const activeUsers = data.filter((u: User & { updated_at?: string }) => {
+            if (u.id === currentUser.id) return false;
+            if (u.name === userName) return false; // Filter out users with same name as current user
+            if (u.status !== 'offline') return true;
+            const updatedAt = new Date(u.updated_at || u.created_at);
+            const minutesOffline = (now.getTime() - updatedAt.getTime()) / (1000 * 60);
+            return minutesOffline < 10;
+          });
+          
+          setAllUsers(activeUsers);
+          setFriends(
+            activeUsers.map((u: User & { updated_at?: string }) => ({
+              id: u.id,
+              name: u.name,
+              status: u.status,
+              streak: u.streak,
+              lastSeen: new Date(u.updated_at || u.created_at),
+            }))
+          );
+        }
+      } catch (error) {
+        console.error('Error loading users:', error);
       }
     };
 
     // Load exams for this group
     const loadExams = async () => {
-      const { data } = await supabase.from('exams').select('*').eq('group_id', currentGroup.id);
-      if (data && data.length > 0) {
-        const loadedExams = data.map((e: DbExam) => ({
-          id: e.id,
-          name: e.name,
-          date: new Date(e.date),
-        }));
-        setExams(loadedExams);
-        // Save to localStorage as backup
-        localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(loadedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
-      } else {
-        // Try loading from localStorage as fallback
-        const stored = localStorage.getItem(`exams_${currentGroup.id}`);
-        if (stored) {
-          try {
-            const parsed = JSON.parse(stored);
-            setExams(parsed.map((e: { id: string; name: string; date: string }) => ({ ...e, date: new Date(e.date) })));
-          } catch (e) {
-            console.log('Failed to parse stored exams');
+      try {
+        const { data, error } = await supabase
+          .from('exams')
+          .select('*')
+          .eq('group_id', currentGroup.id);
+        
+        if (error) {
+          console.error('Error loading exams:', error);
+          return;
+        }
+
+        if (data && data.length > 0) {
+          const loadedExams = data.map((e: DbExam) => ({
+            id: e.id,
+            name: e.name,
+            date: new Date(e.date),
+          }));
+          setExams(loadedExams);
+          // Save to localStorage as backup
+          localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(loadedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
+        } else {
+          // Try loading from localStorage as fallback
+          const stored = localStorage.getItem(`exams_${currentGroup.id}`);
+          if (stored) {
+            try {
+              const parsed = JSON.parse(stored);
+              setExams(parsed.map((e: { id: string; name: string; date: string }) => ({ ...e, date: new Date(e.date) })));
+            } catch (e) {
+              console.log('Failed to parse stored exams');
+            }
           }
         }
+      } catch (error) {
+        console.error('Error loading exams:', error);
       }
     };
 
-    loadMessages();
     loadUsers();
     loadExams();
 
-    // Real-time disabled - using polling only
-    console.log('📊 Using polling for group:', currentGroup.id);
+    console.log('📊 Initial data loading complete for group:', currentGroup.id);
 
-    return () => {
-      // No channels to cleanup - using polling only
-    };
-
-  }, [currentUser, currentGroup]);
+  }, [currentUser, currentGroup, user]);
 
   const addExam = async () => {
     if (!newExamName.trim() || !newExamDate || !currentUser || !currentGroup) return;
