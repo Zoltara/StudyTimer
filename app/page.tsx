@@ -929,19 +929,62 @@ export default function Home() {
   };
 
   const createUser = async () => {
-    if (!userName.trim()) return;
+    const trimmedName = userName.trim();
+    if (!trimmedName) return;
     if (!currentGroup) return;
 
-    console.log('Creating user:', userName);
+    console.log('Creating user:', trimmedName);
+
+    // Update userName to trimmed version to ensure consistency
+    setUserName(trimmedName);
 
     await createNewUser();
   };
 
   const createNewUser = async () => {
-    if (!userName.trim() || !currentGroup) return;
+    if (!userName.trim() || !currentGroup) {
+      console.error('Cannot create user: missing userName or currentGroup');
+      return;
+    }
+    
+    if (!user || !user.id) {
+      console.error('Cannot create user: user is not authenticated');
+      alert('Please sign in first to create a user profile');
+      setShowAuth(true);
+      return;
+    }
 
     setNameError('');
     setShowNameConfirm(false);
+
+    // Check for duplicate names in this group
+    console.log('Checking for duplicate name in group:', userName);
+    const { data: existingNames, error: nameCheckError } = await supabase
+      .from('users')
+      .select('id, name, auth_id')
+      .eq('group_id', currentGroup.id)
+      .ilike('name', userName.trim());
+
+    if (nameCheckError) {
+      console.error('Error checking for duplicate names:', nameCheckError);
+    } else if (existingNames && existingNames.length > 0) {
+      // Check if any of the existing names belong to a different auth user
+      const duplicateFromOtherUser = existingNames.find(u => u.auth_id !== user.id);
+      if (duplicateFromOtherUser) {
+        setNameError(`The name "${userName}" is already taken in this group. Please choose a different name.`);
+        return;
+      }
+      // If it's the same auth user, allow them to use their existing profile
+      const existingUserProfile = existingNames.find(u => u.auth_id === user.id);
+      if (existingUserProfile) {
+        console.log('User already has a profile in this group with this name');
+        setExistingUserId(existingUserProfile.id);
+        setShowNameConfirm(true);
+        return;
+      }
+    }
+
+    console.log('Creating new user with:', { auth_id: user.id, name: userName, group_id: currentGroup.id });
 
     const { data, error } = await supabase
       .from('users')
@@ -956,15 +999,21 @@ export default function Home() {
       .select()
       .single();
 
-    console.log('Create user result:', { data, error });
+    console.log('Create user result:', { data, error, userData: data });
 
     if (error) {
       console.error('Error creating user:', error);
-      alert('Error: ' + error.message);
+      // Check if it's a duplicate key error
+      if (error.message?.includes('duplicate') || error.code === '23505') {
+        setNameError('This name is already taken in this group. Please choose a different name.');
+      } else {
+        alert('Error: ' + error.message);
+      }
       return;
     }
 
     if (data) {
+      console.log('Setting currentUser to:', data);
       setCurrentUser(data);
       setIsNameSet(true);
 
@@ -1125,7 +1174,29 @@ export default function Home() {
   };
 
   const sendMessage = async () => {
-    if (!newMessage.trim() || !currentUser || !currentGroup) return;
+    console.log('sendMessage called', { 
+      hasMessage: !!newMessage.trim(), 
+      hasCurrentUser: !!currentUser, 
+      hasCurrentGroup: !!currentGroup,
+      currentUserId: currentUser?.id,
+      groupId: currentGroup?.id 
+    });
+    
+    if (!newMessage.trim()) {
+      console.warn('Message is empty');
+      return;
+    }
+    
+    if (!currentUser) {
+      console.error('Cannot send message: currentUser is null');
+      alert('Please set your name first before sending messages');
+      return;
+    }
+    
+    if (!currentGroup) {
+      console.error('Cannot send message: currentGroup is null');
+      return;
+    }
 
     const text = newMessage.trim();
     const tempId = 'msg-' + Math.random().toString(36).substring(2, 9);
@@ -1148,25 +1219,34 @@ export default function Home() {
     // 2. Broadcast to peers immediately
     if (groupChannelRef.current) {
       try {
-        groupChannelRef.current.send({
+        await groupChannelRef.current.send({
           type: 'broadcast',
           event: 'new-message',
           payload: chatMsg,
         });
+        console.log('Message broadcasted successfully');
       } catch (err) {
         console.error('Broadcast failed:', err);
       }
+    } else {
+      console.warn('No group channel available for broadcast');
     }
 
     // 3. Persist to DB in background
     try {
-      await supabase.from('messages').insert({
+      const { data, error } = await supabase.from('messages').insert({
         user_id: currentUser.id,
         user_name: userName,
         group_id: currentGroup.id,
         text: text,
         is_system: false,
       });
+      
+      if (error) {
+        console.error('DB insert error:', error);
+      } else {
+        console.log('Message persisted to DB successfully');
+      }
     } catch (err) {
       console.error('Failed to persist message:', err);
     }
@@ -1355,10 +1435,17 @@ export default function Home() {
                   const { error } = await signUp(email, password);
                   if (error) {
                     console.error('SignUp failed:', error);
-                    setAuthError(error.message || 'Failed to sign up');
+                    // Provide helpful messages for common errors
+                    if (error.message?.includes('already registered') || error.message?.includes('already exists')) {
+                      setAuthError('This email is already registered. Please sign in instead.');
+                    } else if (error.message?.includes('Password')) {
+                      setAuthError(error.message + ' (minimum 6 characters)');
+                    } else {
+                      setAuthError(error.message || 'Failed to sign up');
+                    }
                   } else {
                     console.log('SignUp successful');
-                    setAuthError('Check your email for confirmation link');
+                    setAuthError('✓ Account created! Check your email for confirmation link');
                     setEmail('');
                     setPassword('');
                     // Clear group and user state so user can choose fresh
@@ -1723,14 +1810,24 @@ export default function Home() {
               type="text"
               value={userName}
               onChange={(e) => {
-                setUserName(e.target.value);
+                // Prevent leading spaces and collapse multiple spaces
+                const value = e.target.value.replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+                setUserName(value);
                 setNameError('');
                 setShowNameConfirm(false);
+              }}
+              onBlur={(e) => {
+                // Trim trailing spaces on blur
+                setUserName(e.target.value.trim());
               }}
               onKeyDown={(e) => handleKeyPress(e, createUser)}
               className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
               placeholder="Your name"
+              maxLength={50}
             />
+            {userName.length >= 40 && (
+              <p className="text-yellow-400 text-xs mb-1">Name is getting long ({userName.length}/50 characters)</p>
+            )}
             {nameError && (
               <p className="text-red-400 text-sm mb-2">{nameError}</p>
             )}
@@ -2007,15 +2104,25 @@ export default function Home() {
               type="text"
               value={userName}
               onChange={(e) => {
-                setUserName(e.target.value);
+                // Prevent leading spaces and collapse multiple spaces
+                const value = e.target.value.replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+                setUserName(value);
                 setNameError('');
                 setShowNameConfirm(false);
+              }}
+              onBlur={(e) => {
+                // Trim trailing spaces on blur
+                setUserName(e.target.value.trim());
               }}
               onKeyDown={(e) => handleKeyPress(e, createUser)}
               className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
               placeholder="Your name"
+              maxLength={50}
               autoFocus
             />
+            {userName.length >= 40 && (
+              <p className="text-yellow-400 text-xs mb-1">Name is getting long ({userName.length}/50 characters)</p>
+            )}
             {nameError && (
               <p className="text-red-400 text-sm mb-2">{nameError}</p>
             )}
@@ -2107,14 +2214,24 @@ export default function Home() {
               type="text"
               value={userName}
               onChange={(e) => {
-                setUserName(e.target.value);
+                // Prevent leading spaces and collapse multiple spaces
+                const value = e.target.value.replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+                setUserName(value);
                 setNameError('');
                 setShowNameConfirm(false);
+              }}
+              onBlur={(e) => {
+                // Trim trailing spaces on blur
+                setUserName(e.target.value.trim());
               }}
               onKeyDown={(e) => handleKeyPress(e, createUser)}
               className={`w-full p-3 rounded-lg bg-zinc-800 border ${nameError ? 'border-red-500' : 'border-zinc-700'} text-white mb-2`}
               placeholder="Your name"
+              maxLength={50}
             />
+            {userName.length >= 40 && (
+              <p className="text-yellow-400 text-xs mb-1">Name is getting long ({userName.length}/50 characters)</p>
+            )}
             {nameError && (
               <p className="text-red-400 text-sm mb-2">{nameError}</p>
             )}
