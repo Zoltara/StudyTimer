@@ -543,7 +543,18 @@ export default function Home() {
             timestamp: new Date(m.created_at)
           }));
           
-          setMessages(allMessages);
+          setMessages(prev => {
+            // Check if there are new messages and play sound
+            const newMsgs = allMessages.filter(m => !prev.some(p => p.id === m.id));
+            if (newMsgs.length > 0) {
+              // Play sound for non-system messages from other users
+              const shouldPlaySound = newMsgs.some(m => !m.isSystem && m.user !== userNameRef.current);
+              if (shouldPlaySound && chatSoundEnabledRef.current) {
+                getAudioManager()?.playNotification();
+              }
+            }
+            return allMessages;
+          });
           console.log(`📥 Polling: Loaded ${allMessages.length} total messages from DB`);
         }
       } catch (err) {
@@ -2376,21 +2387,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white p-4">
-      {/* Realtime Disconnected Warning */}
-      {currentGroup && !isRealtimeConnected && (
-        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 max-w-md">
-          <div className="bg-yellow-600 text-white px-6 py-3 rounded-lg shadow-lg">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">⚠️</span>
-              <div className="flex-1">
-                <p className="font-semibold">Live Updates Unavailable</p>
-                <p className="text-xs text-yellow-100">Messages are being saved but may appear with delay</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Settings Change Warning Banner */}
       {settingsWarning && (
         <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 animate-pulse">
