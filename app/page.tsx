@@ -1722,6 +1722,12 @@ export default function Home() {
                 </div>
                 <button
                   onClick={async () => {
+                    // Delete user from database (removes from group and leaderboard)
+                    if (currentUser) {
+                      await supabase.from('users').delete().eq('id', currentUser.id);
+                      console.log('User removed from group:', currentUser.name);
+                    }
+                    
                     await signOut();
                     setUser(null);
                     setCurrentGroup(null);
@@ -2441,6 +2447,12 @@ export default function Home() {
               </button>
               <button
                 onClick={async () => {
+                  // Delete user from database (removes from group and leaderboard)
+                  if (currentUser) {
+                    await supabase.from('users').delete().eq('id', currentUser.id);
+                    console.log('User removed from group:', currentUser.name);
+                  }
+                  
                   await signOut();
                   setUser(null);
                   setIsNameSet(false);
