@@ -1,7 +1,14 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { supabase, User, Message as DbMessage, Exam as DbExam, StudyGroup, generateGroupCode, signUp, signIn, signOut, resetPassword, getCurrentUser } from '../lib/supabase';
+
+// NodeJS types polyfill for linter
+declare global {
+  namespace NodeJS {
+    interface Timeout { }
+  }
+}
 
 // Audio file paths
 const AUDIO_FILES = {
@@ -126,7 +133,6 @@ const DEFAULT_SETTINGS: TimerSettings = {
   cyclesBeforeLongBreak: 3,
 };
 
-// Circular Progress Bar Component
 function CircularProgress({
   progress,
   size = 200,
@@ -138,7 +144,7 @@ function CircularProgress({
   size?: number;
   strokeWidth?: number;
   timerState: TimerState;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   const radius = (size - strokeWidth) / 2;
   const circumference = radius * 2 * Math.PI;
@@ -286,6 +292,7 @@ export default function Home() {
 
   // Channel ref for broadcasting group events (chat, timer, etc)
   const groupChannelRef = useRef<any>(null);
+  const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
 
   // Always scroll to top when main screen changes
   useEffect(() => {
@@ -381,248 +388,133 @@ export default function Home() {
   // Use smoothProgress for continuous animation, seconds for display
   const progress = timerState === 'idle' ? 1 : smoothProgress;
 
-  // Load initial data and set up realtime subscriptions
+  // Refs to avoid effect restarts (Deeper Stability)
+  const userNameRef = useRef(userName);
+  const currentUserRef = useRef(currentUser);
+  const isGroupCreatorRef = useRef(isGroupCreator);
+  const useSyncedTimerRef = useRef(useSyncedTimer);
+  const chatSoundEnabledRef = useRef(chatSoundEnabled);
+
+  useEffect(() => { userNameRef.current = userName; }, [userName]);
+  useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+  useEffect(() => { isGroupCreatorRef.current = isGroupCreator; }, [isGroupCreator]);
+  useEffect(() => { useSyncedTimerRef.current = useSyncedTimer; }, [useSyncedTimer]);
+  useEffect(() => { chatSoundEnabledRef.current = chatSoundEnabled; }, [chatSoundEnabled]);
+
+  // 1. Static Data Loading (Runs once per group change)
   useEffect(() => {
     if (!currentUser || !currentGroup) return;
 
-    // Load messages for this group
-    const loadMessages = async () => {
-      const { data } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('group_id', currentGroup.id)
-        .order('created_at', { ascending: false })
-        .limit(100);
+    const loadInitialData = async () => {
+      console.log('📦 Loading initial group data...');
+      // Load messages
+      const { data: msgData } = await supabase.from('messages').select('*').eq('group_id', currentGroup.id).order('created_at', { ascending: true }).limit(200);
+      if (msgData) setMessages(msgData.map((m: DbMessage) => ({ id: m.id, user: m.user_name, text: m.text, isSystem: m.is_system, timestamp: new Date(m.created_at) })));
 
-      if (data) {
-        setMessages(
-          data.map((m: DbMessage) => ({
-            id: m.id,
-            user: m.user_name,
-            text: m.text,
-            isSystem: m.is_system,
-            timestamp: new Date(m.created_at),
-          }))
-        );
+      // Load users
+      const { data: userData } = await supabase.from('users').select('*').eq('group_id', currentGroup.id);
+      if (userData) {
+        setAllUsers(userData);
+        setFriends(userData.filter(u => u.auth_id !== currentUser?.auth_id).map(u => ({ id: u.id, name: u.name, status: u.status, streak: u.streak, lastSeen: new Date(u.created_at) })));
       }
+
+      // Load exams
+      const { data: examData } = await supabase.from('exams').select('*').eq('group_id', currentGroup.id);
+      if (examData) setExams(examData.map((e: DbExam) => ({ id: e.id, name: e.name, date: new Date(e.date) })));
     };
 
-    // Load all users in this group
-    const loadUsers = async () => {
-      const { data } = await supabase
-        .from('users')
-        .select('*')
-        .eq('group_id', currentGroup.id)
-        .order('created_at', { ascending: true });
-      if (data && data.length > 0) {
-        // Filter out users offline for more than 10 minutes
-        const now = new Date();
-        const activeUsers = data.filter((u: User & { updated_at?: string }) => {
-          if (u.id === currentUser.id) return false;
-          if (u.name === userName) return false; // Filter out users with same name as current user
-          if (u.status !== 'offline') return true;
-          const updatedAt = new Date(u.updated_at || u.created_at);
-          const minutesOffline = (now.getTime() - updatedAt.getTime()) / (1000 * 60);
-          return minutesOffline < 10;
+    loadInitialData();
+  }, [currentGroup?.id, currentUser?.auth_id]);
+
+  // 2. Realtime Subscription (STABLE: only depends on group ID)
+  useEffect(() => {
+    if (!currentGroup?.id) return;
+
+    console.log(`📡 REALTIME: Establishing stable connection to group [${currentGroup.id}]`);
+    const channel = supabase.channel(`group-${currentGroup.id}`, {
+      config: { broadcast: { self: false, ack: false } }
+    });
+
+    channel
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` }, (payload) => {
+        console.log('📥 DB: New Message detected', payload.new);
+        const m = payload.new as DbMessage;
+        setMessages((prev) => {
+          if (prev.some(msg => msg.id === m.id)) return prev;
+          const timeDiff = 10000;
+          const optimisticIndex = prev.findIndex(msg =>
+            msg.text === m.text && msg.user === m.user_name &&
+            Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < timeDiff
+          );
+          if (optimisticIndex !== -1) {
+            const updated = [...prev];
+            updated[optimisticIndex] = { id: m.id, user: m.user_name, text: m.text, isSystem: m.is_system, timestamp: new Date(m.created_at) };
+            return updated;
+          }
+          return [...prev, { id: m.id, user: m.user_name, text: m.text, isSystem: m.is_system, timestamp: new Date(m.created_at) }];
         });
-
-        // Remove duplicate names, keeping the most recently updated user
-        const uniqueByName = activeUsers.reduce((acc: (User & { updated_at?: string })[], user: User & { updated_at?: string }) => {
-          const existingIndex = acc.findIndex(u => u.name === user.name);
-          if (existingIndex === -1) {
-            acc.push(user);
-          } else {
-            // Keep the more recently updated one
-            const existingUpdated = new Date(acc[existingIndex].updated_at || acc[existingIndex].created_at);
-            const currentUpdated = new Date(user.updated_at || user.created_at);
-            if (currentUpdated > existingUpdated) {
-              acc[existingIndex] = user;
-            }
-          }
-          return acc;
-        }, []);
-
-        setAllUsers(uniqueByName);
-        setFriends(
-          uniqueByName.map((u: User & { updated_at?: string }) => ({
-            id: u.id,
-            name: u.name,
-            status: u.status,
-            streak: u.streak,
-            lastSeen: new Date(u.updated_at || u.created_at),
-          }))
-        );
-      }
-    };
-
-    // Load exams for this group
-    const loadExams = async () => {
-      const { data } = await supabase.from('exams').select('*').eq('group_id', currentGroup.id);
-      if (data && data.length > 0) {
-        const loadedExams = data.map((e: DbExam) => ({
-          id: e.id,
-          name: e.name,
-          date: new Date(e.date),
-        }));
-        setExams(loadedExams);
-        // Save to localStorage as backup
-        localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(loadedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
-      } else {
-        // Try loading from localStorage as fallback
-        const stored = localStorage.getItem(`exams_${currentGroup.id}`);
-        if (stored) {
-          try {
-            const parsed = JSON.parse(stored);
-            setExams(parsed.map((e: { id: string; name: string; date: string }) => ({ ...e, date: new Date(e.date) })));
-          } catch (e) {
-            console.log('Failed to parse stored exams');
-          }
-        }
-      }
-    };
-
-    loadMessages();
-    loadUsers();
-    loadExams();
-
-    // Unified group channel for all realtime events
-    console.log(`📡 Initializing realtime group channel: group-${currentGroup.id}`);
-    const groupChannel = supabase
-      .channel(`group-${currentGroup.id}`, {
-        config: {
-          broadcast: { self: false, ack: true },
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` }, (payload) => {
+        const u = payload.new as User;
+        if (u.id !== currentUserRef.current?.id) {
+          setFriends(prev => prev.map(f => f.id === u.id ? { ...f, status: u.status, streak: u.streak } : f));
+          setAllUsers(prev => prev.map(user => user.id === u.id ? u : user));
         }
       })
-      // 1. Postgres Changes: Messages
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` },
-        (payload) => {
-          const m = payload.new as DbMessage;
-          setMessages((prev) => {
-            if (prev.some(msg => msg.id === m.id)) return prev;
-            const timeDiff = 5000;
-            const optimisticIndex = prev.findIndex(msg =>
-              msg.text === m.text &&
-              msg.user === m.user_name &&
-              Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < timeDiff
-            );
-            if (optimisticIndex !== -1) {
-              const updated = [...prev];
-              updated[optimisticIndex] = {
-                id: m.id,
-                user: m.user_name,
-                text: m.text,
-                isSystem: m.is_system,
-                timestamp: new Date(m.created_at),
-              };
-              return updated;
-            }
-            if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
-              getAudioManager()?.playNotification();
-            }
-            return [...prev, {
-              id: m.id,
-              user: m.user_name,
-              text: m.text,
-              isSystem: m.is_system,
-              timestamp: new Date(m.created_at),
-            }];
-          });
-        }
-      )
-      // 2. Postgres Changes: Users (Status)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
-        (payload) => {
-          const u = payload.new as User;
-          if (u.id !== currentUser.id) {
-            setFriends(prev => prev.map(f => f.id === u.id ? { ...f, status: u.status, streak: u.streak } : f));
-            setAllUsers(prev => prev.map(user => user.id === u.id ? u : user));
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
-        (payload) => {
-          const u = payload.new as User;
-          if (u.id !== currentUser.id && u.name !== userName) {
-            setFriends(prev => prev.some(f => f.id === u.id) ? prev : [...prev, {
-              id: u.id, name: u.name, status: u.status, streak: u.streak, lastSeen: new Date(u.created_at)
-            }]);
-            setAllUsers(prev => prev.some(user => user.id === u.id) ? prev : [...prev, u]);
-          }
-        }
-      )
-      // 3. Broadcasts: Messages
       .on('broadcast', { event: 'new-message' }, (payload) => {
+        console.log('⚡ BROADCAST: New Message received', payload.payload);
         const m = payload.payload;
-        if (m.user !== userName) {
+        if (m.user !== userNameRef.current) {
           setMessages((prev) => {
             if (prev.some(msg => msg.id === m.id)) return prev;
-            if (!m.isSystem && chatSoundEnabled) getAudioManager()?.playNotification();
+            if (!m.isSystem && chatSoundEnabledRef.current) getAudioManager()?.playNotification();
             return [...prev, { id: m.id, user: m.user, text: m.text, isSystem: m.isSystem, timestamp: new Date(m.timestamp) }];
           });
         }
       })
-      // 4. Broadcasts: Timer & Settings
-      .on('broadcast', { event: 'settings-change' }, (payload) => {
-        const { settings: newSettings, changedById, changedByName } = payload.payload;
-        if (changedById !== user?.id) {
-          if (!isGroupCreator && useSyncedTimer) {
-            setSettings(newSettings);
-            if (timerState === 'idle') setSeconds(newSettings.focusTime * 60);
-          }
-          setSettingsWarning(`⚠️ Timer Changed by ${changedByName || 'group member'}`);
-          setTimeout(() => setSettingsWarning(null), 5000);
+      .on('broadcast', { event: 'timer-tick' }, (payload) => {
+        if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
+          setSeconds(payload.payload.seconds);
+          setTimerState(payload.payload.timerState);
         }
       })
       .on('broadcast', { event: 'timer-sync' }, (payload) => {
-        const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, changedById, changedByName } = payload.payload;
-        if (changedById !== user?.id && !isGroupCreator && useSyncedTimer) {
+        console.log('⚡ BROADCAST: Timer sync received', payload.payload);
+        const { timerState: ns, seconds: nsec, cycleCount: ncc, changedById } = payload.payload;
+        if (changedById !== currentUserRef.current?.id && !isGroupCreatorRef.current && useSyncedTimerRef.current) {
+          setTimerState(ns); setSeconds(nsec); if (ncc !== undefined) setCycleCount(ncc);
           const audio = getAudioManager();
-          const prevTimerState = timerState;
-          setTimerState(newTimerState);
-          setSeconds(newSeconds);
-          if (newCycleCount !== undefined) setCycleCount(newCycleCount);
-          if (prevTimerState !== newTimerState) {
-            if (newTimerState === 'focus') audio?.focusStart();
-            else if (newTimerState === 'break') audio?.shortBreak();
-            else if (newTimerState === 'idle' || newTimerState === 'lostInBreak') audio?.stopTicking();
-          }
+          if (ns === 'focus') audio?.focusStart();
+          else if (ns === 'break') audio?.shortBreak();
+          else if (ns === 'idle') audio?.stopTicking();
         }
       })
-      .on('broadcast', { event: 'timer-tick' }, (payload) => {
-        const { seconds: newSeconds, timerState: newTimerState } = payload.payload;
-        if (!isGroupCreator && useSyncedTimer) {
-          setSeconds(newSeconds);
-          setTimerState(newTimerState);
+      .on('broadcast', { event: 'settings-change' }, (payload) => {
+        console.log('⚡ BROADCAST: Settings changed', payload.payload);
+        if (payload.payload.changedById !== currentUserRef.current?.id && !isGroupCreatorRef.current && useSyncedTimerRef.current) {
+          setSettings(payload.payload.settings);
         }
       })
-      // 5. Broadcasts: Miscellaneous
       .on('broadcast', { event: 'exam-update' }, () => {
+        console.log('⚡ BROADCAST: Exam update received');
         supabase.from('exams').select('*').eq('group_id', currentGroup.id).then(({ data }) => {
           if (data) setExams(data.map((e: DbExam) => ({ id: e.id, name: e.name, date: new Date(e.date) })));
         });
       })
-      .on('broadcast', { event: 'group-deleted' }, (payload) => {
-        const { groupName, deletedBy } = payload.payload;
-        getAudioManager()?.stopTicking();
-        alert(`The study group "${groupName}" was deleted by ${deletedBy}.`);
-        window.location.reload(); // Hard reset for clean state
-      })
+      .on('broadcast', { event: 'group-deleted' }, () => window.location.reload())
       .subscribe((status) => {
-        console.log(`Realtime group channel status: ${status}`);
-        if (status === 'SUBSCRIBED') groupChannelRef.current = groupChannel;
+        console.log(`🔌 Realtime Status: ${status}`);
+        setIsRealtimeConnected(status === 'SUBSCRIBED');
+        if (status === 'SUBSCRIBED') groupChannelRef.current = channel;
       });
 
     return () => {
+      console.log('🔌 Realtime: Closing stable connection');
+      supabase.removeChannel(channel);
+      setIsRealtimeConnected(false);
       groupChannelRef.current = null;
-      supabase.removeChannel(groupChannel);
     };
-  }, [currentUser?.id, currentGroup?.id, userName, timerState, isGroupCreator, useSyncedTimer, chatSoundEnabled, user?.id]);
+  }, [currentGroup?.id]);
 
   const addSystemMessage = useCallback(
     async (text: string, overrideUser?: User | null, overrideGroup?: StudyGroup | null) => {
@@ -859,7 +751,7 @@ export default function Home() {
     }
 
     return () => {
-      if (interval) clearInterval(interval);
+      if (interval) clearInterval(interval as unknown as number);
     };
   }, [timerState, seconds, userName, currentStreak, cycleCount, addSystemMessage, updateUserStatus, settings, isGroupCreator, currentGroup, useSyncedTimer]);
 
@@ -1255,11 +1147,15 @@ export default function Home() {
 
     // 2. Broadcast to peers immediately
     if (groupChannelRef.current) {
-      groupChannelRef.current.send({
-        type: 'broadcast',
-        event: 'new-message',
-        payload: chatMsg,
-      });
+      try {
+        groupChannelRef.current.send({
+          type: 'broadcast',
+          event: 'new-message',
+          payload: chatMsg,
+        });
+      } catch (err) {
+        console.error('Broadcast failed:', err);
+      }
     }
 
     // 3. Persist to DB in background
@@ -2400,6 +2296,11 @@ export default function Home() {
               <span className="text-zinc-400">📚 {currentGroup.name}</span>
               <span className="text-zinc-600">•</span>
               <span className="text-purple-400">Created by {currentGroup.created_by_name || currentGroup.created_by}</span>
+              <span className="text-zinc-600">•</span>
+              <div className="flex items-center gap-1.5" title={isRealtimeConnected ? "Realtime Connected" : "Realtime Disconnected"}>
+                <div className={`w-2 h-2 rounded-full ${isRealtimeConnected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`} />
+                <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Live</span>
+              </div>
               <span className="text-zinc-600">•</span>
               <button
                 onClick={copyGroupCode}
