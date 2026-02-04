@@ -741,7 +741,11 @@ export default function Home() {
         setIsGroupCreator(false);
         setUseSyncedTimer(true);
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log(`Realtime: Subscribed to group ${currentGroup.id}`);
+        }
+      });
 
     // Store the channel ref for broadcasting
     settingsChannelRef.current = settingsChannel;
@@ -753,7 +757,7 @@ export default function Home() {
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
     };
-  }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer]);
+  }, [currentUser, currentGroup, userName, timerState, isGroupCreator, useSyncedTimer, chatSoundEnabled, user]);
 
   const addSystemMessage = useCallback(
     async (text: string, overrideUser?: User | null, overrideGroup?: StudyGroup | null) => {
@@ -2626,10 +2630,10 @@ export default function Home() {
                   <div className="text-center">
                     <div
                       className={`text-4xl font-mono font-bold ${timerState === 'lostInBreak'
-                          ? 'text-red-500'
-                          : timerState === 'break'
-                            ? 'text-yellow-500'
-                            : 'text-white'
+                        ? 'text-red-500'
+                        : timerState === 'break'
+                          ? 'text-yellow-500'
+                          : 'text-white'
                         }`}
                     >
                       {formatTime(seconds)}
@@ -2728,8 +2732,8 @@ export default function Home() {
                         setUseSyncedTimer(!useSyncedTimer);
                       }}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${useSyncedTimer
-                          ? 'bg-emerald-600 hover:bg-emerald-700'
-                          : 'bg-purple-600 hover:bg-purple-700'
+                        ? 'bg-emerald-600 hover:bg-emerald-700'
+                        : 'bg-purple-600 hover:bg-purple-700'
                         }`}
                     >
                       {useSyncedTimer ? 'Use Own Timer' : 'Sync with Creator'}
@@ -2747,10 +2751,10 @@ export default function Home() {
                       setEditingSettings(true);
                     }}
                     className={`w-full py-2 rounded-lg text-sm transition ${isGroupCreator
-                        ? 'bg-zinc-800 hover:bg-zinc-700'
-                        : useSyncedTimer
-                          ? 'bg-zinc-800/50 text-zinc-500 cursor-not-allowed'
-                          : 'bg-zinc-800 hover:bg-zinc-700'
+                      ? 'bg-zinc-800 hover:bg-zinc-700'
+                      : useSyncedTimer
+                        ? 'bg-zinc-800/50 text-zinc-500 cursor-not-allowed'
+                        : 'bg-zinc-800 hover:bg-zinc-700'
                       }`}
                     disabled={!isGroupCreator && useSyncedTimer}
                     title={!isGroupCreator && useSyncedTimer ? 'Settings are controlled by the group creator. Switch to "Use Own Timer" to change settings.' : ''}
@@ -2862,8 +2866,8 @@ export default function Home() {
                 <button
                   onClick={() => setChatSoundEnabled(!chatSoundEnabled)}
                   className={`p-2 rounded-lg transition-colors ${chatSoundEnabled
-                      ? 'bg-emerald-600 hover:bg-emerald-700'
-                      : 'bg-zinc-700 hover:bg-zinc-600'
+                    ? 'bg-emerald-600 hover:bg-emerald-700'
+                    : 'bg-zinc-700 hover:bg-zinc-600'
                     }`}
                   title={chatSoundEnabled ? 'Mute chat notifications' : 'Unmute chat notifications'}
                 >
@@ -2876,10 +2880,10 @@ export default function Home() {
                   <div
                     key={msg.id}
                     className={`p-2 rounded-lg ${msg.isSystem
-                        ? 'bg-zinc-800 text-zinc-400 text-sm italic'
-                        : msg.user === userName
-                          ? 'bg-emerald-900/50 ml-4'
-                          : 'bg-zinc-800 mr-4'
+                      ? 'bg-zinc-800 text-zinc-400 text-sm italic'
+                      : msg.user === userName
+                        ? 'bg-emerald-900/50 ml-4'
+                        : 'bg-zinc-800 mr-4'
                       }`}
                   >
                     {!msg.isSystem && <span className="font-semibold text-emerald-400">{msg.user}: </span>}
@@ -2949,12 +2953,12 @@ export default function Home() {
                         <span className="flex items-center gap-2">
                           <span
                             className={`w-2 h-2 rounded-full ${friend.status === 'focus'
-                                ? 'bg-emerald-500'
-                                : friend.status === 'break'
-                                  ? 'bg-yellow-500'
-                                  : friend.status === 'online'
-                                    ? 'bg-blue-500'
-                                    : 'bg-zinc-500'
+                              ? 'bg-emerald-500'
+                              : friend.status === 'break'
+                                ? 'bg-yellow-500'
+                                : friend.status === 'online'
+                                  ? 'bg-blue-500'
+                                  : 'bg-zinc-500'
                               }`}
                           />
                           {friend.name}
