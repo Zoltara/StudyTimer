@@ -15,7 +15,7 @@ const AUDIO_FILES = {
 // Audio manager for handling sounds
 class AudioManager {
   private tickingAudio: HTMLAudioElement | null = null;
-  
+
   playSound(src: string) {
     if (typeof window === 'undefined') return;
     try {
@@ -37,7 +37,7 @@ class AudioManager {
       console.log('Audio not supported');
     }
   }
-  
+
   startTicking() {
     if (typeof window === 'undefined') return;
     this.stopTicking();
@@ -50,7 +50,7 @@ class AudioManager {
       console.log('Ticking audio not supported');
     }
   }
-  
+
   stopTicking() {
     if (this.tickingAudio) {
       this.tickingAudio.pause();
@@ -58,21 +58,21 @@ class AudioManager {
       this.tickingAudio = null;
     }
   }
-  
+
   focusStart() {
     this.playSound(AUDIO_FILES.start);
   }
-  
+
   focusComplete() {
     this.stopTicking();
     this.playSound(AUDIO_FILES.shortBreak);
   }
-  
+
   shortBreak() {
     this.stopTicking();
     this.playSound(AUDIO_FILES.shortBreak);
   }
-  
+
   longBreak() {
     this.stopTicking();
     this.playSound(AUDIO_FILES.longBreak);
@@ -283,9 +283,10 @@ export default function Home() {
   const [smoothProgress, setSmoothProgress] = useState(1);
   const lastTickRef = useRef<number>(Date.now());
   const animationFrameRef = useRef<number | null>(null);
-  
+
   // Channel ref for broadcasting settings/timer changes
   const settingsChannelRef = useRef<any>(null);
+  const messagesChannelRef = useRef<any>(null);
 
   // Always scroll to top when main screen changes
   useEffect(() => {
@@ -425,7 +426,7 @@ export default function Home() {
           const minutesOffline = (now.getTime() - updatedAt.getTime()) / (1000 * 60);
           return minutesOffline < 10;
         });
-        
+
         // Remove duplicate names, keeping the most recently updated user
         const uniqueByName = activeUsers.reduce((acc: (User & { updated_at?: string })[], user: User & { updated_at?: string }) => {
           const existingIndex = acc.findIndex(u => u.name === user.name);
@@ -441,7 +442,7 @@ export default function Home() {
           }
           return acc;
         }, []);
-        
+
         setAllUsers(uniqueByName);
         setFriends(
           uniqueByName.map((u: User & { updated_at?: string }) => ({
@@ -495,14 +496,36 @@ export default function Home() {
           const m = payload.new as DbMessage;
           // Only process messages for this group
           if (m.group_id !== currentGroup.id) return;
-          
-          // Play notification sound only for messages from others (not system messages or own messages)
-          if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
-            getAudioManager()?.playNotification();
-          }
+
           setMessages((prev) => {
-            // Avoid duplicates
+            // 1. Avoid duplicates by ID
             if (prev.some(msg => msg.id === m.id)) return prev;
+
+            // 2. Check for matching broadcast/optimistic message to replace (to get real DB ID)
+            const timeDiff = 5000; // 5 seconds window
+            const optimisticIndex = prev.findIndex(msg =>
+              msg.text === m.text &&
+              msg.user === m.user_name &&
+              Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < timeDiff
+            );
+
+            if (optimisticIndex !== -1) {
+              const updated = [...prev];
+              updated[optimisticIndex] = {
+                id: m.id,
+                user: m.user_name,
+                text: m.text,
+                isSystem: m.is_system,
+                timestamp: new Date(m.created_at),
+              };
+              return updated;
+            }
+
+            // Play notification sound only for new messages from others (if not already handled by broadcast)
+            if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
+              getAudioManager()?.playNotification();
+            }
+
             return [
               ...prev,
               {
@@ -516,7 +539,35 @@ export default function Home() {
           });
         }
       )
+      .on('broadcast', { event: 'new-message' }, (payload) => {
+        const m = payload.payload;
+        // Only process if it's not from us (we use optimistic UI for sender)
+        if (m.user !== userName) {
+          setMessages((prev) => {
+            if (prev.some(msg => msg.id === m.id)) return prev;
+
+            // Play sound for others
+            if (!m.isSystem && chatSoundEnabled) {
+              getAudioManager()?.playNotification();
+            }
+
+            return [
+              ...prev,
+              {
+                id: m.id,
+                user: m.user,
+                text: m.text,
+                isSystem: m.isSystem,
+                timestamp: new Date(m.timestamp),
+              },
+            ];
+          });
+        }
+      })
       .subscribe();
+
+    // Store ref for sending
+    messagesChannelRef.current = messagesChannel;
 
     // Subscribe to user status changes for this group
     const usersChannel = supabase
@@ -671,7 +722,7 @@ export default function Home() {
         // Group was deleted by creator - redirect all members
         getAudioManager()?.stopTicking();
         alert(`The study group "${groupName}" was deleted by ${deletedBy}.`);
-        
+
         // Reset all state
         setCurrentUser(null);
         setCurrentGroup(null);
@@ -691,12 +742,13 @@ export default function Home() {
         setUseSyncedTimer(true);
       })
       .subscribe();
-    
+
     // Store the channel ref for broadcasting
     settingsChannelRef.current = settingsChannel;
 
     return () => {
       settingsChannelRef.current = null;
+      messagesChannelRef.current = null;
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(usersChannel);
       supabase.removeChannel(settingsChannel);
@@ -704,13 +756,39 @@ export default function Home() {
   }, [currentUser, userName, timerState, isGroupCreator, useSyncedTimer]);
 
   const addSystemMessage = useCallback(
-    async (text: string) => {
-      if (!currentUser || !currentGroup) return;
+    async (text: string, overrideUser?: User | null, overrideGroup?: StudyGroup | null) => {
+      const u = overrideUser !== undefined ? overrideUser : currentUser;
+      const g = overrideGroup !== undefined ? overrideGroup : currentGroup;
+
+      if (!u || !g) return;
+
+      const tempId = 'sys-' + Math.random().toString(36).substring(2, 9);
+      const timestamp = new Date();
+
+      const systemMsg = {
+        id: tempId,
+        user: 'System',
+        text,
+        isSystem: true,
+        timestamp,
+      };
+
+      // Optimistic/Local update
+      setMessages(prev => [...prev, systemMsg]);
+
+      // Broadcast
+      if (messagesChannelRef.current) {
+        messagesChannelRef.current.send({
+          type: 'broadcast',
+          event: 'new-message',
+          payload: systemMsg,
+        });
+      }
 
       await supabase.from('messages').insert({
-        user_id: currentUser.id,
+        user_id: u.id,
         user_name: 'System',
-        group_id: currentGroup.id,
+        group_id: g.id,
         text,
         is_system: true,
       });
@@ -755,13 +833,13 @@ export default function Home() {
   useEffect(() => {
     const checkInactiveGroups = async () => {
       const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      
+
       // Get inactive groups (exclude current user's group from deletion, but check if it exists)
       const { data: inactiveGroups } = await supabase
         .from('study_groups')
         .select('id, name')
         .lt('updated_at', thirtyMinutesAgo);
-      
+
       if (inactiveGroups && inactiveGroups.length > 0) {
         for (const group of inactiveGroups) {
           // Check if this is the current user's group
@@ -769,7 +847,7 @@ export default function Home() {
             // Current group is inactive - redirect user
             getAudioManager()?.stopTicking();
             alert(`The study group "${group.name}" was deleted due to 30 minutes of inactivity.`);
-            
+
             // Reset all state
             setCurrentUser(null);
             setCurrentGroup(null);
@@ -788,7 +866,7 @@ export default function Home() {
             setIsGroupCreator(false);
             setUseSyncedTimer(true);
           }
-          
+
           // Delete all messages in the group
           await supabase.from('messages').delete().eq('group_id', group.id);
           // Delete all exams in the group
@@ -816,7 +894,7 @@ export default function Home() {
 
     const checkInactiveUsers = async () => {
       const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      
+
       // Get inactive users (haven't updated in 30 minutes)
       const { data: inactiveUsers } = await supabase
         .from('users')
@@ -824,27 +902,21 @@ export default function Home() {
         .eq('group_id', currentGroup.id)
         .lt('updated_at', thirtyMinutesAgo)
         .neq('id', currentUser.id); // Don't remove current user
-      
+
       if (inactiveUsers && inactiveUsers.length > 0) {
         const inactiveUserIds = inactiveUsers.map(u => u.id);
         const inactiveUserNames = inactiveUsers.map(u => u.name);
-        
+
         // Delete inactive users from the database (removes from group and leaderboard)
         await supabase.from('users').delete().in('id', inactiveUserIds);
-        
+
         // Update local state
         setFriends(prev => prev.filter(f => !inactiveUserIds.includes(f.id)));
         setAllUsers(prev => prev.filter(u => !inactiveUserIds.includes(u.id)));
-        
+
         // Send system message about removed users
         for (const name of inactiveUserNames) {
-          await supabase.from('messages').insert({
-            user_id: currentUser.id,
-            user_name: 'System',
-            group_id: currentGroup.id,
-            text: `⏰ ${name} was removed due to 30 minutes of inactivity.`,
-            is_system: true,
-          });
+          await addSystemMessage(`⏰ ${name} was removed due to 30 minutes of inactivity.`);
         }
       }
     };
@@ -884,7 +956,7 @@ export default function Home() {
 
     // Run timer countdown for group creator OR non-creators using their own timer
     const shouldRunOwnTimer = isGroupCreator || !useSyncedTimer;
-    
+
     if (timerState === 'focus' && seconds > 0 && shouldRunOwnTimer) {
       interval = setInterval(() => setSeconds((s) => s - 1), 1000);
     } else if (timerState === 'focus' && seconds === 0 && shouldRunOwnTimer) {
@@ -906,7 +978,7 @@ export default function Home() {
       setTimerState('lostInBreak');
       addSystemMessage(`⚠️ ${userName} lost in break`);
       updateUserStatus('offline');
-      
+
       // Broadcast lostInBreak state to group members (only if group creator)
       if (currentGroup && isGroupCreator && settingsChannelRef.current) {
         settingsChannelRef.current.send({
@@ -925,7 +997,7 @@ export default function Home() {
   // Smooth progress animation using requestAnimationFrame
   useEffect(() => {
     const totalTime = getTotalTime();
-    
+
     if (timerState === 'idle') {
       setSmoothProgress(1);
       lastTickRef.current = Date.now();
@@ -981,7 +1053,7 @@ export default function Home() {
       }
     };
     loadPublicGroups();
-    
+
     // Refresh every 30 seconds
     const interval = setInterval(loadPublicGroups, 30000);
     return () => clearInterval(interval);
@@ -995,7 +1067,7 @@ export default function Home() {
       return;
     }
     if (!groupName.trim() || !groupTopic.trim()) return;
-    
+
     const code = generateGroupCode();
     const now = new Date().toISOString();
     const { data, error } = await supabase
@@ -1073,7 +1145,7 @@ export default function Home() {
       // This lets them choose to use existing name or create new one
       setIsNameSet(false);
       setShowNameConfirm(false);
-      
+
       if (existingUser) {
         console.log('User already in group, showing option to reuse:', existingUser.name);
         // Pre-fill with existing name so they can see it
@@ -1106,19 +1178,19 @@ export default function Home() {
 
   const createNewUser = async () => {
     if (!userName.trim() || !currentGroup) return;
-    
+
     setNameError('');
     setShowNameConfirm(false);
 
     const { data, error } = await supabase
       .from('users')
-      .insert({ 
+      .insert({
         auth_id: user.id,
-        name: userName, 
+        name: userName,
         group_id: currentGroup.id,
-        status: 'online', 
-        streak: 0, 
-        sessions_today: 0 
+        status: 'online',
+        streak: 0,
+        sessions_today: 0
       })
       .select()
       .single();
@@ -1134,20 +1206,14 @@ export default function Home() {
     if (data) {
       setCurrentUser(data);
       setIsNameSet(true);
-      
+
       // Auto-set study target to group topic
       if (currentGroup?.topic) {
         setStudyTarget(currentGroup.topic);
       }
 
       // Send welcome message
-      await supabase.from('messages').insert({
-        user_id: data.id,
-        user_name: 'System',
-        group_id: currentGroup.id,
-        text: `👋 ${userName} joined the study group!`,
-        is_system: true,
-      });
+      await addSystemMessage(`👋 ${userName} joined the study group!`, data, currentGroup);
     }
   };
 
@@ -1183,13 +1249,7 @@ export default function Home() {
     }
 
     // Send welcome back message
-    await supabase.from('messages').insert({
-      user_id: existingUserId,
-      user_name: 'System',
-      group_id: currentGroup.id,
-      text: `👋 ${userName} is back!`,
-      is_system: true,
-    });
+    await addSystemMessage(`👋 ${userName} is back!`, { ...existingUser, status: 'online' } as User, currentGroup);
   };
 
   const rejectExistingUser = () => {
@@ -1216,7 +1276,7 @@ export default function Home() {
     await updateUserStatus('focus');
     const targetText = studyTarget ? ` on ${studyTarget}` : '';
     await addSystemMessage(`🎯 ${userName} started focusing${targetText}!`);
-    
+
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator && settingsChannelRef.current) {
       await settingsChannelRef.current.send({
@@ -1241,7 +1301,7 @@ export default function Home() {
     setTimerState('break');
     const breakType = isLongBreak ? 'long break' : 'short break';
     addSystemMessage(`☕ ${userName} on a ${breakType} (${breakTime} min)`);
-    
+
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator && settingsChannelRef.current) {
       await settingsChannelRef.current.send({
@@ -1264,7 +1324,7 @@ export default function Home() {
     await updateUserStatus('focus');
     const targetText = studyTarget ? ` on ${studyTarget}` : '';
     await addSystemMessage(`✅ ${userName} is back from break! Starting cycle #${cycleCount + 1}${targetText}`);
-    
+
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator && settingsChannelRef.current) {
       await settingsChannelRef.current.send({
@@ -1286,7 +1346,7 @@ export default function Home() {
     setTimerState('idle');
     setSeconds(idleSeconds);
     setCycleCount(0);
-    
+
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator && settingsChannelRef.current) {
       await settingsChannelRef.current.send({
@@ -1306,15 +1366,45 @@ export default function Home() {
   const sendMessage = async () => {
     if (!newMessage.trim() || !currentUser || !currentGroup) return;
 
-    await supabase.from('messages').insert({
-      user_id: currentUser.id,
-      user_name: userName,
-      group_id: currentGroup.id,
-      text: newMessage,
-      is_system: false,
-    });
+    const text = newMessage.trim();
+    const tempId = 'msg-' + Math.random().toString(36).substring(2, 9);
+    const timestamp = new Date();
 
+    // Clear input immediately for better UX
     setNewMessage('');
+
+    const chatMsg = {
+      id: tempId,
+      user: userName,
+      text,
+      isSystem: false,
+      timestamp,
+    };
+
+    // 1. Optimistic local update
+    setMessages(prev => [...prev, chatMsg]);
+
+    // 2. Broadcast to peers immediately
+    if (messagesChannelRef.current) {
+      messagesChannelRef.current.send({
+        type: 'broadcast',
+        event: 'new-message',
+        payload: chatMsg,
+      });
+    }
+
+    // 3. Persist to DB in background
+    try {
+      await supabase.from('messages').insert({
+        user_id: currentUser.id,
+        user_name: userName,
+        group_id: currentGroup.id,
+        text: text,
+        is_system: false,
+      });
+    } catch (err) {
+      console.error('Failed to persist message:', err);
+    }
   };
 
   const addExam = async () => {
@@ -1336,7 +1426,7 @@ export default function Home() {
       // Save to localStorage as backup
       const updatedExams = [...exams, { id: data.id, name: data.name, date: new Date(data.date) }];
       localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
-      
+
       // Broadcast exam update to group
       if (settingsChannelRef.current) {
         await settingsChannelRef.current.send({
@@ -1365,7 +1455,7 @@ export default function Home() {
           e.id === examId ? { ...e, name: editExamName, date: new Date(editExamDate) } : e
         )
       );
-      
+
       // Broadcast exam update to group
       if (settingsChannelRef.current) {
         await settingsChannelRef.current.send({
@@ -1384,7 +1474,7 @@ export default function Home() {
   const deleteExam = async (examId: string) => {
     await supabase.from('exams').delete().eq('id', examId);
     setExams((prev) => prev.filter((e) => e.id !== examId));
-    
+
     // Broadcast exam update to group
     if (currentGroup && settingsChannelRef.current) {
       await settingsChannelRef.current.send({
@@ -1399,7 +1489,7 @@ export default function Home() {
     // Remove all offline users from the database
     const offlineUserIds = friends.filter((f) => f.status === 'offline').map((f) => f.id);
     if (offlineUserIds.length === 0) return;
-    
+
     await supabase.from('users').delete().in('id', offlineUserIds);
     setFriends((prev) => prev.filter((f) => f.status !== 'offline'));
     setAllUsers((prev) => prev.filter((u) => !offlineUserIds.includes(u.id)));
@@ -1745,7 +1835,7 @@ export default function Home() {
               ← Back
             </button>
             <h2 className="text-2xl font-bold mb-6">Create New Group</h2>
-            
+
             <label className="block text-sm text-zinc-400 mb-2">Group Name</label>
             <input
               type="text"
@@ -1754,7 +1844,7 @@ export default function Home() {
               className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white mb-4"
               placeholder="My Study Group"
             />
-            
+
             <label className="block text-sm text-zinc-400 mb-2">Study Topic</label>
             <input
               type="text"
@@ -1763,7 +1853,7 @@ export default function Home() {
               className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white mb-4"
               placeholder="e.g., Math, Programming, Languages..."
             />
-            
+
             <label className="flex items-center gap-3 mb-6 cursor-pointer">
               <input
                 type="checkbox"
@@ -1773,7 +1863,7 @@ export default function Home() {
               />
               <span className="text-zinc-300">Make this group public (visible to others)</span>
             </label>
-            
+
             <button
               onClick={createGroup}
               disabled={!groupName.trim() || !groupTopic.trim() || !user}
@@ -1796,7 +1886,7 @@ export default function Home() {
               ← Back
             </button>
             <h2 className="text-2xl font-bold mb-6">Join a Group</h2>
-            
+
             <label className="block text-sm text-zinc-400 mb-2">Enter Group Code</label>
             <input
               type="text"
@@ -1813,7 +1903,7 @@ export default function Home() {
             {joinError && (
               <p className="text-red-400 text-sm mb-2">{joinError}</p>
             )}
-            
+
             <button
               onClick={() => joinGroup()}
               disabled={joinCode.length !== 6}
@@ -1834,14 +1924,14 @@ export default function Home() {
                 <span className="inline-block mt-2 px-2 py-1 rounded bg-emerald-600 text-xs">👑 Group Creator</span>
               )}
             </div>
-            
+
             {isGroupCreator && (
               <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
                 <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
                 <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
                   {currentGroup.code}
                 </div>
-                
+
                 {/* QR Code */}
                 <div className="my-4">
                   <img
@@ -1853,7 +1943,7 @@ export default function Home() {
                   />
                   <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
                 </div>
-                
+
                 <button
                   onClick={copyGroupCode}
                   className="text-sm text-zinc-400 hover:text-white"
@@ -1862,7 +1952,7 @@ export default function Home() {
                 </button>
               </div>
             )}
-            
+
             <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
             <input
               type="text"
@@ -1879,7 +1969,7 @@ export default function Home() {
             {nameError && (
               <p className="text-red-400 text-sm mb-2">{nameError}</p>
             )}
-            
+
             {/* Name confirmation dialog */}
             {showNameConfirm && (
               <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
@@ -1902,7 +1992,7 @@ export default function Home() {
                 </div>
               </div>
             )}
-            
+
             {!showNameConfirm && (
               <button
                 onClick={createUser}
@@ -1912,7 +2002,7 @@ export default function Home() {
                 Join & Start Studying
               </button>
             )}
-            
+
             <button
               onClick={() => {
                 setCurrentGroup(null);
@@ -2146,7 +2236,7 @@ export default function Home() {
               <p className="text-sm text-emerald-400 font-semibold">✅ You've joined <strong>{currentGroup.name}</strong>!</p>
               <p className="text-xs text-emerald-300 mt-1">Now enter the name you want to use</p>
             </div>
-            
+
             <label className="block text-sm text-zinc-400 mb-2">Your Name in Group</label>
             <input
               type="text"
@@ -2164,7 +2254,7 @@ export default function Home() {
             {nameError && (
               <p className="text-red-400 text-sm mb-2">{nameError}</p>
             )}
-            
+
             {showNameConfirm && (
               <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
                 <p className="text-yellow-200 mb-3">
@@ -2186,7 +2276,7 @@ export default function Home() {
                 </div>
               </div>
             )}
-            
+
             {!showNameConfirm && (
               <button
                 onClick={createUser}
@@ -2196,7 +2286,7 @@ export default function Home() {
                 Join & Start Studying
               </button>
             )}
-            
+
             <button
               onClick={() => {
                 setCurrentGroup(null);
@@ -2218,14 +2308,14 @@ export default function Home() {
                 <span className="inline-block mt-2 px-2 py-1 rounded bg-emerald-600 text-xs">👑 Group Creator</span>
               )}
             </div>
-            
+
             {isGroupCreator && (
               <div className="bg-zinc-800 p-4 rounded-xl mb-6 text-center">
                 <p className="text-sm text-zinc-400 mb-2">Share this code with friends:</p>
                 <div className="text-3xl font-bold tracking-widest text-emerald-400 mb-2">
                   {currentGroup.code}
                 </div>
-                
+
                 {/* QR Code */}
                 <div className="my-4">
                   <img
@@ -2237,7 +2327,7 @@ export default function Home() {
                   />
                   <p className="text-xs text-zinc-500 mt-2">Scan to get the code</p>
                 </div>
-                
+
                 <button
                   onClick={copyGroupCode}
                   className="text-sm text-zinc-400 hover:text-white"
@@ -2246,7 +2336,7 @@ export default function Home() {
                 </button>
               </div>
             )}
-            
+
             <label className="block text-sm text-zinc-400 mb-2">Enter your name</label>
             <input
               type="text"
@@ -2263,7 +2353,7 @@ export default function Home() {
             {nameError && (
               <p className="text-red-400 text-sm mb-2">{nameError}</p>
             )}
-            
+
             {/* Name confirmation dialog */}
             {showNameConfirm && (
               <div className="bg-yellow-900/50 border border-yellow-700 p-4 rounded-xl mb-4">
@@ -2286,7 +2376,7 @@ export default function Home() {
                 </div>
               </div>
             )}
-            
+
             {!showNameConfirm && (
               <button
                 onClick={createUser}
@@ -2296,7 +2386,7 @@ export default function Home() {
                 Join & Start Studying
               </button>
             )}
-            
+
             <button
               onClick={() => {
                 setCurrentGroup(null);
@@ -2535,13 +2625,12 @@ export default function Home() {
                 <CircularProgress progress={progress} size={220} strokeWidth={14} timerState={timerState}>
                   <div className="text-center">
                     <div
-                      className={`text-4xl font-mono font-bold ${
-                        timerState === 'lostInBreak'
+                      className={`text-4xl font-mono font-bold ${timerState === 'lostInBreak'
                           ? 'text-red-500'
                           : timerState === 'break'
-                          ? 'text-yellow-500'
-                          : 'text-white'
-                      }`}
+                            ? 'text-yellow-500'
+                            : 'text-white'
+                        }`}
                     >
                       {formatTime(seconds)}
                     </div>
@@ -2621,7 +2710,7 @@ export default function Home() {
                         {useSyncedTimer ? '🔗 Synced with Creator' : '⏱️ Using Own Timer'}
                       </div>
                       <div className="text-xs text-zinc-400">
-                        {useSyncedTimer 
+                        {useSyncedTimer
                           ? `Timer controlled by ${currentGroup?.created_by_name || currentGroup?.created_by || 'group creator'}`
                           : 'You control your own timer independently'
                         }
@@ -2638,11 +2727,10 @@ export default function Home() {
                         }
                         setUseSyncedTimer(!useSyncedTimer);
                       }}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                        useSyncedTimer
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${useSyncedTimer
                           ? 'bg-emerald-600 hover:bg-emerald-700'
                           : 'bg-purple-600 hover:bg-purple-700'
-                      }`}
+                        }`}
                     >
                       {useSyncedTimer ? 'Use Own Timer' : 'Sync with Creator'}
                     </button>
@@ -2658,13 +2746,12 @@ export default function Home() {
                       setTempSettings(settings);
                       setEditingSettings(true);
                     }}
-                    className={`w-full py-2 rounded-lg text-sm transition ${
-                      isGroupCreator
+                    className={`w-full py-2 rounded-lg text-sm transition ${isGroupCreator
                         ? 'bg-zinc-800 hover:bg-zinc-700'
                         : useSyncedTimer
                           ? 'bg-zinc-800/50 text-zinc-500 cursor-not-allowed'
                           : 'bg-zinc-800 hover:bg-zinc-700'
-                    }`}
+                      }`}
                     disabled={!isGroupCreator && useSyncedTimer}
                     title={!isGroupCreator && useSyncedTimer ? 'Settings are controlled by the group creator. Switch to "Use Own Timer" to change settings.' : ''}
                   >
@@ -2704,42 +2791,42 @@ export default function Home() {
                           type="number"
                           value={tempSettings.longBreakTime}
                           onChange={(e) =>
-                              setTempSettings({ ...tempSettings, longBreakTime: parseInt(e.target.value) || 1 })
-                            }
-                            className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 text-sm"
-                            min="1"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs text-zinc-500">Cycles</label>
-                          <input
-                            type="number"
-                            value={tempSettings.cyclesBeforeLongBreak}
-                            onChange={(e) =>
-                              setTempSettings({ ...tempSettings, cyclesBeforeLongBreak: parseInt(e.target.value) || 1 })
-                            }
-                            className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 text-sm"
-                            min="1"
-                          />
-                        </div>
+                            setTempSettings({ ...tempSettings, longBreakTime: parseInt(e.target.value) || 1 })
+                          }
+                          className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 text-sm"
+                          min="1"
+                        />
                       </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={saveSettings}
-                          className="flex-1 py-2 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-700 transition"
-                        >
-                          Save
-                        </button>
-                        <button
-                          onClick={() => setEditingSettings(false)}
-                          className="flex-1 py-2 rounded-lg text-sm bg-zinc-700 hover:bg-zinc-600 transition"
-                        >
-                          Cancel
-                        </button>
+                      <div>
+                        <label className="text-xs text-zinc-500">Cycles</label>
+                        <input
+                          type="number"
+                          value={tempSettings.cyclesBeforeLongBreak}
+                          onChange={(e) =>
+                            setTempSettings({ ...tempSettings, cyclesBeforeLongBreak: parseInt(e.target.value) || 1 })
+                          }
+                          className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 text-sm"
+                          min="1"
+                        />
                       </div>
                     </div>
-                  )}
-                </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={saveSettings}
+                        className="flex-1 py-2 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-700 transition"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setEditingSettings(false)}
+                        className="flex-1 py-2 rounded-lg text-sm bg-zinc-700 hover:bg-zinc-600 transition"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Leaderboard */}
@@ -2749,9 +2836,8 @@ export default function Home() {
                 {getLeaderboard().map((user, index) => (
                   <div
                     key={user.name}
-                    className={`flex justify-between items-center p-2 rounded-lg ${
-                      index === 0 ? 'bg-yellow-900/30' : 'bg-zinc-800'
-                    }`}
+                    className={`flex justify-between items-center p-2 rounded-lg ${index === 0 ? 'bg-yellow-900/30' : 'bg-zinc-800'
+                      }`}
                   >
                     <span className="flex items-center gap-2">
                       {index === 0 && '👑'}
@@ -2775,11 +2861,10 @@ export default function Home() {
                 <h2 className="text-xl font-semibold">💬 Study Chat</h2>
                 <button
                   onClick={() => setChatSoundEnabled(!chatSoundEnabled)}
-                  className={`p-2 rounded-lg transition-colors ${
-                    chatSoundEnabled
+                  className={`p-2 rounded-lg transition-colors ${chatSoundEnabled
                       ? 'bg-emerald-600 hover:bg-emerald-700'
                       : 'bg-zinc-700 hover:bg-zinc-600'
-                  }`}
+                    }`}
                   title={chatSoundEnabled ? 'Mute chat notifications' : 'Unmute chat notifications'}
                 >
                   {chatSoundEnabled ? '🔔' : '🔕'}
@@ -2790,13 +2875,12 @@ export default function Home() {
                 {[...messages].reverse().map((msg) => (
                   <div
                     key={msg.id}
-                    className={`p-2 rounded-lg ${
-                      msg.isSystem
+                    className={`p-2 rounded-lg ${msg.isSystem
                         ? 'bg-zinc-800 text-zinc-400 text-sm italic'
                         : msg.user === userName
-                        ? 'bg-emerald-900/50 ml-4'
-                        : 'bg-zinc-800 mr-4'
-                    }`}
+                          ? 'bg-emerald-900/50 ml-4'
+                          : 'bg-zinc-800 mr-4'
+                      }`}
                   >
                     {!msg.isSystem && <span className="font-semibold text-emerald-400">{msg.user}: </span>}
                     {msg.text}
@@ -2837,7 +2921,7 @@ export default function Home() {
                   🧹 Remove Offline
                 </button>
               </div>
-              
+
               <p className="text-sm text-zinc-400 mb-4">
                 {friends.filter(f => f.status !== 'offline').length + 1} active user{friends.filter(f => f.status !== 'offline').length !== 0 ? 's' : ''}
               </p>
@@ -2851,7 +2935,7 @@ export default function Home() {
                   </span>
                   <span className="text-xs text-zinc-400 capitalize">{timerState === 'idle' ? 'online' : timerState}</span>
                 </div>
-                
+
                 {friends.length === 0 ? (
                   <p className="text-zinc-500 text-sm">No one else is here yet...</p>
                 ) : (
@@ -2861,38 +2945,37 @@ export default function Home() {
                       return order[a.status] - order[b.status];
                     })
                     .map((friend) => (
-                    <div key={friend.id} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
-                      <span className="flex items-center gap-2">
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            friend.status === 'focus'
-                              ? 'bg-emerald-500'
-                              : friend.status === 'break'
-                              ? 'bg-yellow-500'
-                              : friend.status === 'online'
-                              ? 'bg-blue-500'
-                              : 'bg-zinc-500'
-                          }`}
-                        />
-                        {friend.name}
-                      </span>
-                      <span className="text-xs text-zinc-400 capitalize">{friend.status}</span>
-                    </div>
-                  ))
+                      <div key={friend.id} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={`w-2 h-2 rounded-full ${friend.status === 'focus'
+                                ? 'bg-emerald-500'
+                                : friend.status === 'break'
+                                  ? 'bg-yellow-500'
+                                  : friend.status === 'online'
+                                    ? 'bg-blue-500'
+                                    : 'bg-zinc-500'
+                              }`}
+                          />
+                          {friend.name}
+                        </span>
+                        <span className="text-xs text-zinc-400 capitalize">{friend.status}</span>
+                      </div>
+                    ))
                 )}
               </div>
-              
+
               <button
                 onClick={async () => {
                   // Delete all other users (keep current user)
                   await supabase.from('users').delete().neq('id', currentUser?.id || '');
                   setFriends([]);
                   setAllUsers([]);
-                  
+
                   // Clear all messages (chat)
                   await supabase.from('messages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
                   setMessages([]);
-                  
+
                   // Reset current user's streak (leaderboard)
                   setCurrentStreak(0);
                   setSessionsCompleted(0);
@@ -2900,39 +2983,28 @@ export default function Home() {
                   if (currentUser) {
                     await supabase.from('users').update({ streak: 0, sessions_today: 0 }).eq('id', currentUser.id);
                   }
-                  
+
                   // Add welcome message for new session
-                  await supabase.from('messages').insert({
-                    user_id: currentUser?.id,
-                    user_name: 'System',
-                    text: `🌟 ${userName} started a new study session!`,
-                    is_system: true,
-                  });
+                  await addSystemMessage(`🌟 ${userName} started a new study session!`);
                 }}
                 className="w-full py-2 rounded-lg text-sm bg-purple-600 hover:bg-purple-700 transition"
               >
                 🚀 Start a New Session
               </button>
-              
+
               <button
                 onClick={async () => {
                   if (!currentUser || !currentGroup) return;
-                  
+
                   // Send leave message
-                  await supabase.from('messages').insert({
-                    user_id: currentUser.id,
-                    user_name: 'System',
-                    group_id: currentGroup.id,
-                    text: `👋 ${userName} left the group.`,
-                    is_system: true,
-                  });
-                  
+                  await addSystemMessage(`👋 ${userName} left the group.`);
+
                   // Delete user from the group
                   await supabase.from('users').delete().eq('id', currentUser.id);
-                  
+
                   // Stop ticking audio if playing
                   getAudioManager()?.stopTicking();
-                  
+
                   // Reset all state
                   setCurrentUser(null);
                   setCurrentGroup(null);
@@ -2955,18 +3027,18 @@ export default function Home() {
               >
                 🚪 Leave this Group
               </button>
-              
+
               {/* Delete Group button - only for group creator */}
               {isGroupCreator && (
                 <button
                   onClick={async () => {
                     if (!currentUser || !currentGroup) return;
-                    
+
                     const confirmed = window.confirm(
                       `Are you sure you want to delete "${currentGroup.name}"? This will remove all members and cannot be undone.`
                     );
                     if (!confirmed) return;
-                    
+
                     // Broadcast group deletion to all members
                     if (settingsChannelRef.current) {
                       await settingsChannelRef.current.send({
@@ -2975,22 +3047,22 @@ export default function Home() {
                         payload: { groupName: currentGroup.name, deletedBy: userName },
                       });
                     }
-                    
+
                     // Delete all messages in the group
                     await supabase.from('messages').delete().eq('group_id', currentGroup.id);
-                    
+
                     // Delete all exams in the group
                     await supabase.from('exams').delete().eq('group_id', currentGroup.id);
-                    
+
                     // Delete all users in the group
                     await supabase.from('users').delete().eq('group_id', currentGroup.id);
-                    
+
                     // Delete the group itself
                     await supabase.from('study_groups').delete().eq('id', currentGroup.id);
-                    
+
                     // Stop ticking audio if playing
                     getAudioManager()?.stopTicking();
-                    
+
                     // Reset all state
                     setCurrentUser(null);
                     setCurrentGroup(null);
@@ -3032,9 +3104,8 @@ export default function Home() {
                       return (
                         <div
                           key={exam.id}
-                          className={`p-3 rounded-lg ${
-                            daysUntil <= 3 ? 'bg-red-900/50 border border-red-700' : 'bg-zinc-800'
-                          }`}
+                          className={`p-3 rounded-lg ${daysUntil <= 3 ? 'bg-red-900/50 border border-red-700' : 'bg-zinc-800'
+                            }`}
                         >
                           {isEditing ? (
                             <div className="space-y-2">
@@ -3093,9 +3164,8 @@ export default function Home() {
                               <div className="text-sm text-zinc-400 flex justify-between">
                                 <span>{exam.date.toLocaleDateString()}</span>
                                 <span
-                                  className={`font-semibold ${
-                                    daysUntil <= 3 ? 'text-red-400' : daysUntil <= 7 ? 'text-yellow-400' : 'text-emerald-400'
-                                  }`}
+                                  className={`font-semibold ${daysUntil <= 3 ? 'text-red-400' : daysUntil <= 7 ? 'text-yellow-400' : 'text-emerald-400'
+                                    }`}
                                 >
                                   {daysUntil} days
                                 </span>
