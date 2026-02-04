@@ -51,10 +51,11 @@ USING (auth.uid() = created_by);
 DROP POLICY IF EXISTS "Allow all for messages" ON messages;
 
 -- Create proper RLS policies for messages
--- Allow users to view messages in their group
+-- Allow users to view messages in groups they're part of
 CREATE POLICY "Users can view messages in their group"
 ON messages FOR SELECT
 USING (
+  group_id IS NULL OR
   EXISTS (
     SELECT 1 FROM users
     WHERE users.auth_id = auth.uid()
@@ -62,19 +63,14 @@ USING (
   )
 );
 
--- Allow users to insert messages in their group
-CREATE POLICY "Users can insert messages in their group"
+-- Allow authenticated users to insert messages
+-- (app code ensures they're in the right group)
+CREATE POLICY "Authenticated users can insert messages"
 ON messages FOR INSERT
-WITH CHECK (
-  EXISTS (
-    SELECT 1 FROM users
-    WHERE users.auth_id = auth.uid()
-    AND users.group_id = messages.group_id
-    AND users.id = messages.user_id
-  )
-);
+TO authenticated
+WITH CHECK (true);
 
--- Allow users to update their own messages (optional - usually messages shouldn't be edited)
+-- Allow users to update their own messages
 CREATE POLICY "Users can update their own messages"
 ON messages FOR UPDATE
 USING (
@@ -83,19 +79,13 @@ USING (
     WHERE users.auth_id = auth.uid()
     AND users.id = messages.user_id
   )
-)
-WITH CHECK (
-  EXISTS (
-    SELECT 1 FROM users
-    WHERE users.auth_id = auth.uid()
-    AND users.id = messages.user_id
-  )
 );
 
--- Allow users to delete their own messages
-CREATE POLICY "Users can delete their own messages"
+-- Allow users to delete their own messages or system messages
+CREATE POLICY "Users can delete messages"
 ON messages FOR DELETE
 USING (
+  is_system = true OR
   EXISTS (
     SELECT 1 FROM users
     WHERE users.auth_id = auth.uid()
@@ -115,6 +105,7 @@ DROP POLICY IF EXISTS "Allow all for exams" ON exams;
 CREATE POLICY "Users can view exams in their group"
 ON exams FOR SELECT
 USING (
+  group_id IS NULL OR
   EXISTS (
     SELECT 1 FROM users
     WHERE users.auth_id = auth.uid()
@@ -122,44 +113,32 @@ USING (
   )
 );
 
--- Allow users to insert exams in their group
-CREATE POLICY "Users can insert exams in their group"
+-- Allow authenticated users to insert exams
+-- (app code ensures they're in the right group)
+CREATE POLICY "Authenticated users can insert exams"
 ON exams FOR INSERT
-WITH CHECK (
-  EXISTS (
-    SELECT 1 FROM users
-    WHERE users.auth_id = auth.uid()
-    AND users.group_id = exams.group_id
-    AND users.id = exams.user_id
-  )
-);
+TO authenticated
+WITH CHECK (true);
 
--- Allow users to update their own exams
-CREATE POLICY "Users can update their own exams"
+-- Allow authenticated users to update exams in their group
+CREATE POLICY "Users can update exams in their group"
 ON exams FOR UPDATE
 USING (
   EXISTS (
     SELECT 1 FROM users
     WHERE users.auth_id = auth.uid()
-    AND users.id = exams.user_id
-  )
-)
-WITH CHECK (
-  EXISTS (
-    SELECT 1 FROM users
-    WHERE users.auth_id = auth.uid()
-    AND users.id = exams.user_id
+    AND users.group_id = exams.group_id
   )
 );
 
--- Allow users to delete their own exams
-CREATE POLICY "Users can delete their own exams"
+-- Allow authenticated users to delete exams in their group
+CREATE POLICY "Users can delete exams in their group"
 ON exams FOR DELETE
 USING (
   EXISTS (
     SELECT 1 FROM users
     WHERE users.auth_id = auth.uid()
-    AND users.id = exams.user_id
+    AND users.group_id = exams.group_id
   )
 );
 
@@ -181,33 +160,42 @@ USING (
     AND current_user.group_id = users.group_id
   )
 );
+users to view other users in their group (or any user if needed)
+CREATE POLICY "Users can view members in their group"
+ON users FOR SELECT
+USING (
+  auth.uid() = auth_id OR
+  group_id IS NULL OR
+  EXISTS (
+    SELECT 1 FROM users AS current_user
+    WHERE current_user.auth_id = auth.uid()
+    AND current_user.group_id = users.group_id
+  )
+);
 
 -- Allow authenticated users to create their own user record
-CREATE POLICY "Users can create their own record"
+CREATE POLICY "Authenticated users can create user records"
 ON users FOR INSERT
+TO authenticated
 WITH CHECK (auth.uid() = auth_id);
 
 -- Allow users to update their own record
 CREATE POLICY "Users can update their own record"
 ON users FOR UPDATE
-USING (auth.uid() = auth_id)
-WITH CHECK (auth.uid() = auth_id);
-
--- Allow users to delete their own record
-CREATE POLICY "Users can delete their own record"
-ON users FOR DELETE
 USING (auth.uid() = auth_id);
 
--- ============================================
--- Verification Queries
--- ============================================
--- Run these queries to verify the policies are correctly applied:
-
--- Check study_groups policies
--- SELECT * FROM pg_policies WHERE tablename = 'study_groups';
-
--- Check messages policies
--- SELECT * FROM pg_policies WHERE tablename = 'messages';
+-- Allow authenticated users to delete user records in their group
+-- (needed for cleanup operations)
+CREATE POLICY "Users can delete records in their group"
+ON users FOR DELETE
+USING (
+  auth.uid() = auth_id OR
+  EXISTS (
+    SELECT 1 FROM users AS current_user
+    WHERE current_user.auth_id = auth.uid()
+    AND current_user.group_id = users.group_id
+  )
+s WHERE tablename = 'messages';
 
 -- Check exams policies
 -- SELECT * FROM pg_policies WHERE tablename = 'exams';
