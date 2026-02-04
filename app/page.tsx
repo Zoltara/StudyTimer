@@ -432,7 +432,10 @@ export default function Home() {
 
     console.log(`📡 REALTIME: Establishing stable connection to group [${currentGroup.id}]`);
     const channel = supabase.channel(`group-${currentGroup.id}`, {
-      config: { broadcast: { self: false, ack: false } }
+      config: { 
+        broadcast: { self: false, ack: false },
+        presence: { key: currentUser?.id || 'anonymous' }
+      }
     });
 
     channel
@@ -515,6 +518,47 @@ export default function Home() {
       groupChannelRef.current = null;
     };
   }, [currentGroup?.id]);
+
+  // Fallback: Poll for new messages when realtime connection fails
+  useEffect(() => {
+    if (!currentGroup?.id || isRealtimeConnected) return;
+
+    console.log('⚠️ Realtime disconnected - enabling message polling fallback');
+    
+    const pollMessages = async () => {
+      try {
+        const { data: msgData } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('group_id', currentGroup.id)
+          .order('created_at', { ascending: true });
+        
+        if (msgData) {
+          // Just replace all messages with fresh data from DB
+          const allMessages = msgData.map((m: DbMessage) => ({
+            id: m.id,
+            user: m.user_name,
+            text: m.text,
+            isSystem: m.is_system,
+            timestamp: new Date(m.created_at)
+          }));
+          
+          setMessages(allMessages);
+          console.log(`📥 Polling: Loaded ${allMessages.length} total messages`);
+        }
+      } catch (err) {
+        console.error('Polling error:', err);
+      }
+    };
+
+    // Poll immediately
+    pollMessages();
+
+    // Poll every 3 seconds when disconnected
+    const interval = setInterval(pollMessages, 3000);
+    
+    return () => clearInterval(interval);
+  }, [currentGroup?.id, isRealtimeConnected]);
 
   const addSystemMessage = useCallback(
     async (text: string, overrideUser?: User | null, overrideGroup?: StudyGroup | null) => {
@@ -2301,6 +2345,21 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white p-4">
+      {/* Realtime Disconnected Warning */}
+      {currentGroup && !isRealtimeConnected && (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 max-w-md">
+          <div className="bg-yellow-600 text-white px-6 py-3 rounded-lg shadow-lg">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">⚠️</span>
+              <div className="flex-1">
+                <p className="font-semibold">Live Updates Unavailable</p>
+                <p className="text-xs text-yellow-100">Messages are being saved but may appear with delay</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Settings Change Warning Banner */}
       {settingsWarning && (
         <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 animate-pulse">
@@ -2760,17 +2819,52 @@ export default function Home() {
           <div className="lg:col-span-1">
             <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800 h-full flex flex-col">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold">💬 Study Chat</h2>
-                <button
-                  onClick={() => setChatSoundEnabled(!chatSoundEnabled)}
-                  className={`p-2 rounded-lg transition-colors ${chatSoundEnabled
-                    ? 'bg-emerald-600 hover:bg-emerald-700'
-                    : 'bg-zinc-700 hover:bg-zinc-600'
-                    }`}
-                  title={chatSoundEnabled ? 'Mute chat notifications' : 'Unmute chat notifications'}
-                >
-                  {chatSoundEnabled ? '🔔' : '🔕'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-semibold">💬 Study Chat</h2>
+                  {!isRealtimeConnected && (
+                    <span className="text-xs px-2 py-1 bg-yellow-600 rounded-full" title="Messages updating every 3 seconds">
+                      Polling
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  {!isRealtimeConnected && (
+                    <button
+                      onClick={async () => {
+                        console.log('🔄 Manual refresh triggered');
+                        const { data: msgData } = await supabase
+                          .from('messages')
+                          .select('*')
+                          .eq('group_id', currentGroup!.id)
+                          .order('created_at', { ascending: true });
+                        if (msgData) {
+                          setMessages(msgData.map((m: DbMessage) => ({
+                            id: m.id,
+                            user: m.user_name,
+                            text: m.text,
+                            isSystem: m.is_system,
+                            timestamp: new Date(m.created_at)
+                          })));
+                          console.log(`✅ Loaded ${msgData.length} messages`);
+                        }
+                      }}
+                      className="p-2 rounded-lg bg-blue-600 hover:bg-blue-700 transition-colors"
+                      title="Refresh messages now"
+                    >
+                      🔄
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setChatSoundEnabled(!chatSoundEnabled)}
+                    className={`p-2 rounded-lg transition-colors ${chatSoundEnabled
+                      ? 'bg-emerald-600 hover:bg-emerald-700'
+                      : 'bg-zinc-700 hover:bg-zinc-600'
+                      }`}
+                    title={chatSoundEnabled ? 'Mute chat notifications' : 'Unmute chat notifications'}
+                  >
+                    {chatSoundEnabled ? '🔔' : '🔕'}
+                  </button>
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-96 flex flex-col-reverse">
