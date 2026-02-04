@@ -1003,19 +1003,29 @@ export default function Home() {
 
     if (error) {
       console.error('Error creating user:', error);
+      console.error('Full error object:', JSON.stringify(error, null, 2));
       // Check if it's a duplicate key error
       if (error.message?.includes('duplicate') || error.code === '23505') {
         setNameError('This name is already taken in this group. Please choose a different name.');
       } else {
-        alert('Error: ' + error.message);
+        setNameError(`Error: ${error.message || 'Unknown error occurred'}`);
+        alert('Error creating user: ' + error.message);
       }
       return;
     }
 
+    if (!data) {
+      console.error('No data returned from user creation');
+      setNameError('Failed to create user - no data returned');
+      return;
+    }
+
     if (data) {
-      console.log('Setting currentUser to:', data);
+      console.log('✅ SUCCESS! Setting currentUser to:', data);
+      console.log('✅ Setting isNameSet to TRUE');
       setCurrentUser(data);
       setIsNameSet(true);
+      console.log('✅ Name is set! Main app should now be visible');
 
       // Auto-set study target to group topic
       if (currentGroup?.topic) {
@@ -1024,6 +1034,7 @@ export default function Home() {
 
       // Send welcome message
       await addSystemMessage(`👋 ${userName} joined the study group!`, data, currentGroup);
+      console.log('✅ Welcome message sent');
     }
   };
 
@@ -1240,15 +1251,19 @@ export default function Home() {
         group_id: currentGroup.id,
         text: text,
         is_system: false,
-      });
+      }).select();
       
       if (error) {
         console.error('DB insert error:', error);
+        console.error('Error details:', JSON.stringify(error, null, 2));
+        // Show user-friendly error
+        alert(`Failed to send message: ${error.message}`);
       } else {
-        console.log('Message persisted to DB successfully');
+        console.log('Message persisted to DB successfully', data);
       }
     } catch (err) {
       console.error('Failed to persist message:', err);
+      alert('Failed to send message. Check console for details.');
     }
   };
 
