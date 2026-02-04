@@ -284,9 +284,8 @@ export default function Home() {
   const lastTickRef = useRef<number>(Date.now());
   const animationFrameRef = useRef<number | null>(null);
 
-  // Channel ref for broadcasting settings/timer changes
-  const settingsChannelRef = useRef<any>(null);
-  const messagesChannelRef = useRef<any>(null);
+  // Channel ref for broadcasting group events (chat, timer, etc)
+  const groupChannelRef = useRef<any>(null);
 
   // Always scroll to top when main screen changes
   useEffect(() => {
@@ -486,29 +485,28 @@ export default function Home() {
     loadUsers();
     loadExams();
 
-    // Subscribe to new messages for this group
-    const messagesChannel = supabase
-      .channel(`messages-${currentGroup.id}`)
+    // Unified group channel for all realtime events
+    console.log(`📡 Initializing realtime group channel: group-${currentGroup.id}`);
+    const groupChannel = supabase
+      .channel(`group-${currentGroup.id}`, {
+        config: {
+          broadcast: { self: false, ack: true },
+        }
+      })
+      // 1. Postgres Changes: Messages
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
           const m = payload.new as DbMessage;
-          // Only process messages for this group
-          if (m.group_id !== currentGroup.id) return;
-
           setMessages((prev) => {
-            // 1. Avoid duplicates by ID
             if (prev.some(msg => msg.id === m.id)) return prev;
-
-            // 2. Check for matching broadcast/optimistic message to replace (to get real DB ID)
-            const timeDiff = 5000; // 5 seconds window
+            const timeDiff = 5000;
             const optimisticIndex = prev.findIndex(msg =>
               msg.text === m.text &&
               msg.user === m.user_name &&
               Math.abs(msg.timestamp.getTime() - new Date(m.created_at).getTime()) < timeDiff
             );
-
             if (optimisticIndex !== -1) {
               const updated = [...prev];
               updated[optimisticIndex] = {
@@ -520,70 +518,28 @@ export default function Home() {
               };
               return updated;
             }
-
-            // Play notification sound only for new messages from others (if not already handled by broadcast)
             if (!m.is_system && chatSoundEnabled && m.user_name !== userName) {
               getAudioManager()?.playNotification();
             }
-
-            return [
-              ...prev,
-              {
-                id: m.id,
-                user: m.user_name,
-                text: m.text,
-                isSystem: m.is_system,
-                timestamp: new Date(m.created_at),
-              },
-            ];
+            return [...prev, {
+              id: m.id,
+              user: m.user_name,
+              text: m.text,
+              isSystem: m.is_system,
+              timestamp: new Date(m.created_at),
+            }];
           });
         }
       )
-      .on('broadcast', { event: 'new-message' }, (payload) => {
-        const m = payload.payload;
-        // Only process if it's not from us (we use optimistic UI for sender)
-        if (m.user !== userName) {
-          setMessages((prev) => {
-            if (prev.some(msg => msg.id === m.id)) return prev;
-
-            // Play sound for others
-            if (!m.isSystem && chatSoundEnabled) {
-              getAudioManager()?.playNotification();
-            }
-
-            return [
-              ...prev,
-              {
-                id: m.id,
-                user: m.user,
-                text: m.text,
-                isSystem: m.isSystem,
-                timestamp: new Date(m.timestamp),
-              },
-            ];
-          });
-        }
-      })
-      .subscribe();
-
-    // Store ref for sending
-    messagesChannelRef.current = messagesChannel;
-
-    // Subscribe to user status changes for this group
-    const usersChannel = supabase
-      .channel(`users-${currentGroup.id}`)
+      // 2. Postgres Changes: Users (Status)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
           const u = payload.new as User;
-          if (u.id !== currentUser.id && u.group_id === currentGroup.id) {
-            setFriends((prev) =>
-              prev.map((f) =>
-                f.id === u.id ? { ...f, status: u.status, streak: u.streak } : f
-              )
-            );
-            setAllUsers((prev) => prev.map((user) => (user.id === u.id ? u : user)));
+          if (u.id !== currentUser.id) {
+            setFriends(prev => prev.map(f => f.id === u.id ? { ...f, status: u.status, streak: u.streak } : f));
+            setAllUsers(prev => prev.map(user => user.id === u.id ? u : user));
           }
         }
       )
@@ -592,172 +548,81 @@ export default function Home() {
         { event: 'INSERT', schema: 'public', table: 'users', filter: `group_id=eq.${currentGroup.id}` },
         (payload) => {
           const u = payload.new as User;
-          if (u.id !== currentUser.id && u.group_id === currentGroup.id && u.name !== userName) {
-            // Add new user to friends list (avoid duplicate IDs and names)
-            setFriends((prev) => {
-              if (prev.some(f => f.id === u.id)) return prev;
-              if (prev.some(f => f.name === u.name)) return prev; // Avoid duplicate names
-              return [...prev, {
-                id: u.id,
-                name: u.name,
-                status: u.status,
-                streak: u.streak,
-                lastSeen: new Date(u.created_at),
-              }];
-            });
-            setAllUsers((prev) => {
-              if (prev.some(user => user.id === u.id)) return prev;
-              if (prev.some(user => user.name === u.name)) return prev; // Avoid duplicate names
-              return [...prev, u];
-            });
+          if (u.id !== currentUser.id && u.name !== userName) {
+            setFriends(prev => prev.some(f => f.id === u.id) ? prev : [...prev, {
+              id: u.id, name: u.name, status: u.status, streak: u.streak, lastSeen: new Date(u.created_at)
+            }]);
+            setAllUsers(prev => prev.some(user => user.id === u.id) ? prev : [...prev, u]);
           }
         }
       )
-      .on(
-        'postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'users' },
-        (payload) => {
-          const deletedId = payload.old?.id;
-          if (deletedId) {
-            setFriends((prev) => prev.filter(f => f.id !== deletedId));
-            setAllUsers((prev) => prev.filter(u => u.id !== deletedId));
-          }
+      // 3. Broadcasts: Messages
+      .on('broadcast', { event: 'new-message' }, (payload) => {
+        const m = payload.payload;
+        if (m.user !== userName) {
+          setMessages((prev) => {
+            if (prev.some(msg => msg.id === m.id)) return prev;
+            if (!m.isSystem && chatSoundEnabled) getAudioManager()?.playNotification();
+            return [...prev, { id: m.id, user: m.user, text: m.text, isSystem: m.isSystem, timestamp: new Date(m.timestamp) }];
+          });
         }
-      )
-      .subscribe();
-
-    // Subscribe to timer settings and state changes (broadcast)
-    const settingsChannel = supabase
-      .channel(`settings-${currentGroup.id}`)
+      })
+      // 4. Broadcasts: Timer & Settings
       .on('broadcast', { event: 'settings-change' }, (payload) => {
-        const { settings: newSettings, changedById, changedByName } = payload.payload as {
-          settings: TimerSettings;
-          changedById?: string;
-          changedByName?: string;
-        };
-        // Only update settings if it's from someone else
+        const { settings: newSettings, changedById, changedByName } = payload.payload;
         if (changedById !== user?.id) {
-          // Only apply settings if non-creator AND using synced timer
           if (!isGroupCreator && useSyncedTimer) {
             setSettings(newSettings);
-            if (timerState === 'idle') {
-              setSeconds(newSettings.focusTime * 60);
-            }
+            if (timerState === 'idle') setSeconds(newSettings.focusTime * 60);
           }
-          // Show notification to everyone
-          const suffix = !isGroupCreator && !useSyncedTimer ? ' (you are using own timer)' : '';
-          setSettingsWarning(`⚠️ Timer Changed by ${changedByName || 'group member'}${suffix}`);
-          // Auto-hide warning after 5 seconds
+          setSettingsWarning(`⚠️ Timer Changed by ${changedByName || 'group member'}`);
           setTimeout(() => setSettingsWarning(null), 5000);
         }
       })
       .on('broadcast', { event: 'timer-sync' }, (payload) => {
-        const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, changedById, changedByName } = payload.payload as {
-          timerState: TimerState;
-          seconds: number;
-          cycleCount: number;
-          changedById?: string;
-          changedByName?: string;
-        };
-        // Sync timer from group creator (only for non-creators who chose to sync)
+        const { timerState: newTimerState, seconds: newSeconds, cycleCount: newCycleCount, changedById, changedByName } = payload.payload;
         if (changedById !== user?.id && !isGroupCreator && useSyncedTimer) {
           const audio = getAudioManager();
           const prevTimerState = timerState;
-
           setTimerState(newTimerState);
           setSeconds(newSeconds);
           if (newCycleCount !== undefined) setCycleCount(newCycleCount);
-
-          // Play audio when state changes
           if (prevTimerState !== newTimerState) {
-            if (newTimerState === 'focus') {
-              audio?.focusStart();
-              setTimeout(() => audio?.playSound(AUDIO_FILES.ticking), 500);
-              setSettingsWarning(`🚀 ${changedByName || 'Someone'} started a focus session!`);
-            } else if (newTimerState === 'break') {
-              audio?.stopTicking();
-              audio?.shortBreak();
-              setSettingsWarning(`☕ ${changedByName || 'Someone'} started a break!`);
-            } else if (newTimerState === 'idle') {
-              audio?.stopTicking();
-              setSettingsWarning(`⏹️ ${changedByName || 'Someone'} ended the session`);
-            } else if (newTimerState === 'lostInBreak') {
-              audio?.stopTicking();
-              setSettingsWarning(`⚠️ ${changedByName || 'Someone'} lost in break!`);
-            }
-            setTimeout(() => setSettingsWarning(null), 3000);
+            if (newTimerState === 'focus') audio?.focusStart();
+            else if (newTimerState === 'break') audio?.shortBreak();
+            else if (newTimerState === 'idle' || newTimerState === 'lostInBreak') audio?.stopTicking();
           }
         }
       })
       .on('broadcast', { event: 'timer-tick' }, (payload) => {
-        const { seconds: newSeconds, timerState: newTimerState } = payload.payload as {
-          seconds: number;
-          timerState: TimerState;
-        };
-        // Continuous timer sync for non-creators who chose to sync
+        const { seconds: newSeconds, timerState: newTimerState } = payload.payload;
         if (!isGroupCreator && useSyncedTimer) {
           setSeconds(newSeconds);
           setTimerState(newTimerState);
         }
       })
+      // 5. Broadcasts: Miscellaneous
       .on('broadcast', { event: 'exam-update' }, () => {
-        // Reload exams when someone adds/updates/deletes one
-        const reloadExams = async () => {
-          const { data } = await supabase.from('exams').select('*').eq('group_id', currentGroup.id);
-          if (data) {
-            setExams(data.map((e: DbExam) => ({
-              id: e.id,
-              name: e.name,
-              date: new Date(e.date),
-            })));
-          }
-        };
-        reloadExams();
+        supabase.from('exams').select('*').eq('group_id', currentGroup.id).then(({ data }) => {
+          if (data) setExams(data.map((e: DbExam) => ({ id: e.id, name: e.name, date: new Date(e.date) })));
+        });
       })
       .on('broadcast', { event: 'group-deleted' }, (payload) => {
-        const { groupName, deletedBy } = payload.payload as {
-          groupName: string;
-          deletedBy: string;
-        };
-        // Group was deleted by creator - redirect all members
+        const { groupName, deletedBy } = payload.payload;
         getAudioManager()?.stopTicking();
         alert(`The study group "${groupName}" was deleted by ${deletedBy}.`);
-
-        // Reset all state
-        setCurrentUser(null);
-        setCurrentGroup(null);
-        setIsNameSet(false);
-        setGroupScreen('select');
-        setFriends([]);
-        setAllUsers([]);
-        setMessages([]);
-        setExams([]);
-        setTimerState('idle');
-        setSeconds(DEFAULT_SETTINGS.focusTime * 60);
-        setCurrentStreak(0);
-        setSessionsCompleted(0);
-        setCycleCount(0);
-        setStudyTarget('');
-        setIsGroupCreator(false);
-        setUseSyncedTimer(true);
+        window.location.reload(); // Hard reset for clean state
       })
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log(`Realtime: Subscribed to group ${currentGroup.id}`);
-        }
+        console.log(`Realtime group channel status: ${status}`);
+        if (status === 'SUBSCRIBED') groupChannelRef.current = groupChannel;
       });
 
-    // Store the channel ref for broadcasting
-    settingsChannelRef.current = settingsChannel;
-
     return () => {
-      settingsChannelRef.current = null;
-      messagesChannelRef.current = null;
-      supabase.removeChannel(messagesChannel);
-      supabase.removeChannel(usersChannel);
-      supabase.removeChannel(settingsChannel);
+      groupChannelRef.current = null;
+      supabase.removeChannel(groupChannel);
     };
-  }, [currentUser, currentGroup, userName, timerState, isGroupCreator, useSyncedTimer, chatSoundEnabled, user]);
+  }, [currentUser?.id, currentGroup?.id, userName, timerState, isGroupCreator, useSyncedTimer, chatSoundEnabled, user?.id]);
 
   const addSystemMessage = useCallback(
     async (text: string, overrideUser?: User | null, overrideGroup?: StudyGroup | null) => {
@@ -781,8 +646,8 @@ export default function Home() {
       setMessages(prev => [...prev, systemMsg]);
 
       // Broadcast
-      if (messagesChannelRef.current) {
-        messagesChannelRef.current.send({
+      if (groupChannelRef.current) {
+        groupChannelRef.current.send({
           type: 'broadcast',
           event: 'new-message',
           payload: systemMsg,
@@ -939,8 +804,8 @@ export default function Home() {
     if (!currentGroup || !isGroupCreator || timerState === 'idle') return;
 
     const broadcastTick = async () => {
-      if (settingsChannelRef.current) {
-        await settingsChannelRef.current.send({
+      if (groupChannelRef.current) {
+        await groupChannelRef.current.send({
           type: 'broadcast',
           event: 'timer-tick',
           payload: { seconds, timerState },
@@ -984,8 +849,8 @@ export default function Home() {
       updateUserStatus('offline');
 
       // Broadcast lostInBreak state to group members (only if group creator)
-      if (currentGroup && isGroupCreator && settingsChannelRef.current) {
-        settingsChannelRef.current.send({
+      if (currentGroup && isGroupCreator && groupChannelRef.current) {
+        groupChannelRef.current.send({
           type: 'broadcast',
           event: 'timer-sync',
           payload: { timerState: 'lostInBreak', seconds: 0, cycleCount: cycleCount, changedById: user?.id, changedByName: userName },
@@ -1282,8 +1147,8 @@ export default function Home() {
     await addSystemMessage(`🎯 ${userName} started focusing${targetText}!`);
 
     // Broadcast timer sync to group members
-    if (currentGroup && isGroupCreator && settingsChannelRef.current) {
-      await settingsChannelRef.current.send({
+    if (currentGroup && isGroupCreator && groupChannelRef.current) {
+      await groupChannelRef.current.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: 0, changedById: user?.id, changedByName: userName },
@@ -1307,8 +1172,8 @@ export default function Home() {
     addSystemMessage(`☕ ${userName} on a ${breakType} (${breakTime} min)`);
 
     // Broadcast timer sync to group members
-    if (currentGroup && isGroupCreator && settingsChannelRef.current) {
-      await settingsChannelRef.current.send({
+    if (currentGroup && isGroupCreator && groupChannelRef.current) {
+      await groupChannelRef.current.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'break', seconds: breakSeconds, cycleCount: cycle, changedById: user?.id, changedByName: userName },
@@ -1330,8 +1195,8 @@ export default function Home() {
     await addSystemMessage(`✅ ${userName} is back from break! Starting cycle #${cycleCount + 1}${targetText}`);
 
     // Broadcast timer sync to group members
-    if (currentGroup && isGroupCreator && settingsChannelRef.current) {
-      await settingsChannelRef.current.send({
+    if (currentGroup && isGroupCreator && groupChannelRef.current) {
+      await groupChannelRef.current.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: cycleCount, changedById: user?.id, changedByName: userName },
@@ -1352,8 +1217,8 @@ export default function Home() {
     setCycleCount(0);
 
     // Broadcast timer sync to group members
-    if (currentGroup && isGroupCreator && settingsChannelRef.current) {
-      await settingsChannelRef.current.send({
+    if (currentGroup && isGroupCreator && groupChannelRef.current) {
+      await groupChannelRef.current.send({
         type: 'broadcast',
         event: 'timer-sync',
         payload: { timerState: 'idle', seconds: idleSeconds, cycleCount: 0, changedById: user?.id, changedByName: userName },
@@ -1389,8 +1254,8 @@ export default function Home() {
     setMessages(prev => [...prev, chatMsg]);
 
     // 2. Broadcast to peers immediately
-    if (messagesChannelRef.current) {
-      messagesChannelRef.current.send({
+    if (groupChannelRef.current) {
+      groupChannelRef.current.send({
         type: 'broadcast',
         event: 'new-message',
         payload: chatMsg,
@@ -1432,8 +1297,8 @@ export default function Home() {
       localStorage.setItem(`exams_${currentGroup.id}`, JSON.stringify(updatedExams.map(e => ({ ...e, date: e.date.toISOString() }))));
 
       // Broadcast exam update to group
-      if (settingsChannelRef.current) {
-        await settingsChannelRef.current.send({
+      if (groupChannelRef.current) {
+        await groupChannelRef.current.send({
           type: 'broadcast',
           event: 'exam-update',
           payload: {},
@@ -1461,8 +1326,8 @@ export default function Home() {
       );
 
       // Broadcast exam update to group
-      if (settingsChannelRef.current) {
-        await settingsChannelRef.current.send({
+      if (groupChannelRef.current) {
+        await groupChannelRef.current.send({
           type: 'broadcast',
           event: 'exam-update',
           payload: {},
@@ -1480,8 +1345,8 @@ export default function Home() {
     setExams((prev) => prev.filter((e) => e.id !== examId));
 
     // Broadcast exam update to group
-    if (currentGroup && settingsChannelRef.current) {
-      await settingsChannelRef.current.send({
+    if (currentGroup && groupChannelRef.current) {
+      await groupChannelRef.current.send({
         type: 'broadcast',
         event: 'exam-update',
         payload: {},
@@ -1505,8 +1370,8 @@ export default function Home() {
     setEditingSettings(false);
 
     // Broadcast settings change to all users in the group using the subscribed channel
-    if (currentGroup && settingsChannelRef.current) {
-      await settingsChannelRef.current.send({
+    if (currentGroup && groupChannelRef.current) {
+      await groupChannelRef.current.send({
         type: 'broadcast',
         event: 'settings-change',
         payload: {
@@ -3044,8 +2909,8 @@ export default function Home() {
                     if (!confirmed) return;
 
                     // Broadcast group deletion to all members
-                    if (settingsChannelRef.current) {
-                      await settingsChannelRef.current.send({
+                    if (groupChannelRef.current) {
+                      await groupChannelRef.current.send({
                         type: 'broadcast',
                         event: 'group-deleted',
                         payload: { groupName: currentGroup.name, deletedBy: userName },
