@@ -544,20 +544,29 @@ export default function Home() {
           }));
           
           setMessages(allMessages);
-          console.log(`📥 Polling: Loaded ${allMessages.length} total messages`);
+          console.log(`📥 Polling: Loaded ${allMessages.length} total messages from DB`);
         }
       } catch (err) {
-        console.error('Polling error:', err);
+        console.error('❌ Polling error:', err);
       }
     };
 
     // Poll immediately
+    console.log('🔄 Starting polling - first poll now');
     pollMessages();
 
-    // Poll every 3 seconds when disconnected
-    const interval = setInterval(pollMessages, 3000);
+    // Poll every 2 seconds when disconnected (faster for better UX)
+    const interval = setInterval(() => {
+      console.log('🔄 Polling interval tick...');
+      pollMessages();
+    }, 2000);
     
-    return () => clearInterval(interval);
+    console.log('✅ Polling interval set up');
+    
+    return () => {
+      console.log('🛑 Stopping polling');
+      clearInterval(interval);
+    };
   }, [currentGroup?.id, isRealtimeConnected]);
 
   const addSystemMessage = useCallback(
@@ -1304,6 +1313,28 @@ export default function Home() {
         alert(`Failed to send message: ${error.message}`);
       } else {
         console.log('Message persisted to DB successfully', data);
+        
+        // If realtime is disconnected, trigger immediate refresh
+        if (!isRealtimeConnected) {
+          console.log('🔄 Realtime disconnected - forcing immediate message refresh');
+          setTimeout(async () => {
+            const { data: msgData } = await supabase
+              .from('messages')
+              .select('*')
+              .eq('group_id', currentGroup.id)
+              .order('created_at', { ascending: true });
+            if (msgData) {
+              setMessages(msgData.map((m: DbMessage) => ({
+                id: m.id,
+                user: m.user_name,
+                text: m.text,
+                isSystem: m.is_system,
+                timestamp: new Date(m.created_at)
+              })));
+              console.log(`✅ Forced refresh: Loaded ${msgData.length} messages`);
+            }
+          }, 500);
+        }
       }
     } catch (err) {
       console.error('Failed to persist message:', err);
