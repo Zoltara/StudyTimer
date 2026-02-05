@@ -439,7 +439,7 @@ export default function Home() {
     console.log(`📡 REALTIME: Establishing stable connection to group [${currentGroup.id}]`);
     const channel = supabase.channel(`group-${currentGroup.id}`, {
       config: { 
-        broadcast: { self: false, ack: false },
+        broadcast: { self: false, ack: true },
         presence: { key: currentUser?.id || 'anonymous' }
       }
     });
@@ -813,16 +813,24 @@ export default function Home() {
 
     const broadcastTick = async () => {
       if (groupChannelRef.current) {
-        console.log('📡 Broadcasting timer-tick:', { seconds, timerState });
-        await groupChannelRef.current.send({
-          type: 'broadcast',
-          event: 'timer-tick',
-          payload: { seconds, timerState },
-        });
+        try {
+          console.log('📡 Broadcasting timer-tick:', { seconds, timerState });
+          const result = await groupChannelRef.current.send({
+            type: 'broadcast',
+            event: 'timer-tick',
+            payload: { seconds, timerState },
+          });
+          console.log('📡 Broadcast result:', result);
+        } catch (error) {
+          console.error('❌ Broadcast error:', error);
+        }
       } else {
         console.warn('⚠️ Cannot broadcast: No group channel');
       }
     };
+
+    // Initial broadcast
+    broadcastTick();
 
     // Broadcast every second
     const interval = setInterval(broadcastTick, 1000);
@@ -2597,6 +2605,24 @@ export default function Home() {
                 <div className={`w-2 h-2 rounded-full ${isRealtimeConnected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`} />
                 <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Live</span>
               </div>
+              {isGroupCreator && timerState !== 'idle' && (
+                <>
+                  <span className="text-zinc-600">•</span>
+                  <div className="flex items-center gap-1.5" title="Broadcasting timer to group">
+                    <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)] animate-pulse" />
+                    <span className="text-[10px] uppercase tracking-wider text-blue-400 font-bold">📡</span>
+                  </div>
+                </>
+              )}
+              {!isGroupCreator && useSyncedTimer && (
+                <>
+                  <span className="text-zinc-600">•</span>
+                  <div className="flex items-center gap-1.5" title="Synced with creator's timer">
+                    <div className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.6)]" />
+                    <span className="text-[10px] uppercase tracking-wider text-purple-400 font-bold">🔗</span>
+                  </div>
+                </>
+              )}
               <span className="text-zinc-600">•</span>
               <button
                 onClick={copyGroupCode}
