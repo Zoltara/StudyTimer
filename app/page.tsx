@@ -394,12 +394,18 @@ export default function Home() {
   const isGroupCreatorRef = useRef(isGroupCreator);
   const useSyncedTimerRef = useRef(useSyncedTimer);
   const chatSoundEnabledRef = useRef(chatSoundEnabled);
+  const timerStateRef = useRef(timerState);
+  const secondsRef = useRef(seconds);
+  const cycleCountRef = useRef(cycleCount);
 
   useEffect(() => { userNameRef.current = userName; }, [userName]);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   useEffect(() => { isGroupCreatorRef.current = isGroupCreator; }, [isGroupCreator]);
   useEffect(() => { useSyncedTimerRef.current = useSyncedTimer; }, [useSyncedTimer]);
   useEffect(() => { chatSoundEnabledRef.current = chatSoundEnabled; }, [chatSoundEnabled]);
+  useEffect(() => { timerStateRef.current = timerState; }, [timerState]);
+  useEffect(() => { secondsRef.current = seconds; }, [seconds]);
+  useEffect(() => { cycleCountRef.current = cycleCount; }, [cycleCount]);
 
   // 1. Static Data Loading (Runs once per group change)
   useEffect(() => {
@@ -475,8 +481,29 @@ export default function Home() {
           });
         }
       })
+      .on('broadcast', { event: 'request-timer-sync' }, async (payload) => {
+        console.log('📥 Received timer-sync request from:', payload.payload.requesterName);
+        // If I'm the creator, broadcast current timer state
+        if (isGroupCreatorRef.current && groupChannelRef.current) {
+          const currentState = {
+            timerState: timerStateRef.current,
+            seconds: secondsRef.current,
+            cycleCount: cycleCountRef.current,
+            changedById: currentUserRef.current?.id,
+            changedByName: userNameRef.current
+          };
+          console.log('📡 Creator sending current timer state:', currentState);
+          await groupChannelRef.current.send({
+            type: 'broadcast',
+            event: 'timer-sync',
+            payload: currentState,
+          });
+        }
+      })
       .on('broadcast', { event: 'timer-tick' }, (payload) => {
+        console.log('📥 Received timer-tick:', payload.payload, { isCreator: isGroupCreatorRef.current, synced: useSyncedTimerRef.current });
         if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
+          console.log('✅ Applying timer-tick update');
           setSeconds(payload.payload.seconds);
           setTimerState(payload.payload.timerState);
         }
@@ -755,17 +782,45 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [currentGroup, currentUser]);
 
+  // When a non-creator joins with synced timer, sync to current timer state
+  useEffect(() => {
+    if (!currentGroup || !currentUser || isGroupCreator || !useSyncedTimer) return;
+
+    console.log('🔄 Non-creator synced user - waiting for timer sync...');
+    
+    // Request current timer state via broadcast
+    const requestSync = async () => {
+      if (groupChannelRef.current) {
+        console.log('📡 Requesting timer sync from creator');
+        await groupChannelRef.current.send({
+          type: 'broadcast',
+          event: 'request-timer-sync',
+          payload: { requesterId: currentUser.id, requesterName: userName },
+        });
+      }
+    };
+
+    // Wait a bit for channel to be ready, then request sync
+    const timeout = setTimeout(requestSync, 1000);
+    return () => clearTimeout(timeout);
+  }, [currentGroup?.id, currentUser?.id, isGroupCreator, useSyncedTimer]);
+
   // Broadcast timer tick to group members (group creator only)
   useEffect(() => {
     if (!currentGroup || !isGroupCreator || timerState === 'idle') return;
 
+    console.log('📡 Timer broadcast enabled:', { timerState, seconds, isGroupCreator });
+
     const broadcastTick = async () => {
       if (groupChannelRef.current) {
+        console.log('📡 Broadcasting timer-tick:', { seconds, timerState });
         await groupChannelRef.current.send({
           type: 'broadcast',
           event: 'timer-tick',
           payload: { seconds, timerState },
         });
+      } else {
+        console.warn('⚠️ Cannot broadcast: No group channel');
       }
     };
 
@@ -1164,10 +1219,11 @@ export default function Home() {
 
     // Broadcast timer sync to group members
     if (currentGroup && isGroupCreator && groupChannelRef.current) {
+      console.log('📡 Broadcasting timer-sync (start focus):', { timerState: 'focus', seconds: focusSeconds, cycleCount });
       await groupChannelRef.current.send({
         type: 'broadcast',
         event: 'timer-sync',
-        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount: 0, changedById: user?.id, changedByName: userName },
+        payload: { timerState: 'focus', seconds: focusSeconds, cycleCount, changedById: user?.id, changedByName: userName },
       });
     }
   };
