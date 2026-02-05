@@ -442,12 +442,7 @@ export default function Home() {
     // Reset channel ready state
     setIsChannelReady(false);
     
-    const channel = supabase.channel(`group-${currentGroup.id}`, {
-      config: { 
-        broadcast: { self: false },
-        presence: { key: currentUser?.id || 'anonymous' }
-      }
-    });
+    const channel = supabase.channel(`group-${currentGroup.id}`);
 
     // Store channel ref immediately
     groupChannelRef.current = channel;
