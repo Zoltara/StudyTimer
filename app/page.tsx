@@ -293,6 +293,7 @@ export default function Home() {
   // Channel ref for broadcasting group events (chat, timer, etc)
   const groupChannelRef = useRef<any>(null);
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
+  const [isChannelReady, setIsChannelReady] = useState(false);
 
   // Always scroll to top when main screen changes
   useEffect(() => {
@@ -437,16 +438,20 @@ export default function Home() {
     if (!currentGroup?.id) return;
 
     console.log(`📡 REALTIME: Establishing stable connection to group [${currentGroup.id}]`);
+    
+    // Reset channel ready state
+    setIsChannelReady(false);
+    
     const channel = supabase.channel(`group-${currentGroup.id}`, {
       config: { 
-        broadcast: { self: false, ack: true },
+        broadcast: { self: false },
         presence: { key: currentUser?.id || 'anonymous' }
       }
     });
 
-    // Store channel ref immediately so broadcasts can use it
+    // Store channel ref immediately
     groupChannelRef.current = channel;
-    console.log('📌 Channel stored in ref immediately');
+    console.log('📌 Channel stored in ref');
 
     channel
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` }, (payload) => {
@@ -538,13 +543,23 @@ export default function Home() {
       .on('broadcast', { event: 'group-deleted' }, () => window.location.reload())
       .subscribe((status) => {
         console.log(`🔌 Realtime Status: ${status}`);
-        setIsRealtimeConnected(status === 'SUBSCRIBED');
-        if (status === 'SUBSCRIBED') {
-          console.log('✅ Realtime channel SUBSCRIBED - broadcasts ready!');
-        } else if (status === 'CLOSED') {
-          console.warn('⚠️ Realtime channel CLOSED');
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error('❌ Realtime channel ERROR');
+        const isSubscribed = status === 'SUBSCRIBED';
+        setIsRealtimeConnected(isSubscribed);
+        
+        if (isSubscribed) {
+          console.log('✅ Realtime channel SUBSCRIBED');
+          // Wait a moment for the channel to fully initialize
+          setTimeout(() => {
+            console.log('✅ Channel ready for broadcasts!');
+            setIsChannelReady(true);
+          }, 500);
+        } else {
+          setIsChannelReady(false);
+          if (status === 'CLOSED') {
+            console.warn('⚠️ Realtime channel CLOSED');
+          } else if (status === 'CHANNEL_ERROR') {
+            console.error('❌ Realtime channel ERROR');
+          }
         }
       });
 
@@ -552,6 +567,7 @@ export default function Home() {
       console.log('🔌 Realtime: Closing stable connection');
       supabase.removeChannel(channel);
       setIsRealtimeConnected(false);
+      setIsChannelReady(false);
       groupChannelRef.current = null;
     };
   }, [currentGroup?.id]);
@@ -817,9 +833,14 @@ export default function Home() {
 
   // Broadcast timer tick to group members (group creator only)
   useEffect(() => {
-    if (!currentGroup || !isGroupCreator || timerState === 'idle') return;
+    if (!currentGroup || !isGroupCreator || timerState === 'idle' || !isChannelReady) {
+      if (isGroupCreator && timerState !== 'idle' && !isChannelReady) {
+        console.log('⏳ Waiting for channel to be ready before broadcasting...');
+      }
+      return;
+    }
 
-    console.log('📡 Timer broadcast enabled:', { timerState, seconds, isGroupCreator });
+    console.log('📡 Timer broadcast enabled:', { timerState, seconds, isGroupCreator, isChannelReady });
 
     const broadcastTick = async () => {
       if (groupChannelRef.current) {
@@ -847,7 +868,7 @@ export default function Home() {
     const interval = setInterval(broadcastTick, 1000);
 
     return () => clearInterval(interval);
-  }, [currentGroup, isGroupCreator, timerState, seconds]);
+  }, [currentGroup, isGroupCreator, timerState, seconds, isChannelReady]);
 
   // Timer logic
   useEffect(() => {
