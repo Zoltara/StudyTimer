@@ -537,16 +537,17 @@ export default function Home() {
       })
       .on('broadcast', { event: 'group-deleted' }, () => window.location.reload())
       .subscribe((status) => {
-        console.log(`🔌 Realtime Status: ${status}, Channel State: ${channel.state}`);
+        console.log(`🔌 Realtime Subscribe Callback - Status: ${status}, Channel State: ${channel.state}`);
         const isSubscribed = status === 'SUBSCRIBED';
         setIsRealtimeConnected(isSubscribed);
         
         if (isSubscribed) {
           console.log('✅ Realtime channel SUBSCRIBED - Channel State:', channel.state);
           // Mark channel as ready immediately since we're using broadcast-only
-          console.log('✅ Channel ready for broadcasts!');
+          console.log('✅ Setting isChannelReady to TRUE');
           setIsChannelReady(true);
         } else {
+          console.log('❌ NOT subscribed, setting isChannelReady to FALSE');
           setIsChannelReady(false);
           if (status === 'CLOSED') {
             console.warn('⚠️ Realtime channel CLOSED');
@@ -555,6 +556,8 @@ export default function Home() {
           }
         }
       });
+    
+    console.log('📡 Subscription initiated for channel:', `group-${currentGroup.id}`);
 
     return () => {
       console.log('🔌 Realtime: Closing stable connection');
@@ -826,26 +829,22 @@ export default function Home() {
 
   // Broadcast timer tick to group members (group creator only)
   useEffect(() => {
-    if (!currentGroup || !isGroupCreator || timerState === 'idle' || !isChannelReady) {
-      if (isGroupCreator && timerState !== 'idle' && !isChannelReady) {
-        console.log('⏳ Waiting for channel to be ready before broadcasting...');
-      }
+    // Simplified: Don't wait for channel ready - broadcast as long as we have a group and are creator
+    if (!currentGroup || !isGroupCreator || timerState === 'idle') {
       return;
     }
 
-    console.log('📡 Timer broadcast enabled:', { timerState, seconds, isGroupCreator, isChannelReady });
+    console.log('📡 Timer broadcast enabled:', { timerState, seconds, isGroupCreator });
 
     const broadcastTick = async () => {
       if (groupChannelRef.current) {
         try {
-          const channelState = groupChannelRef.current.state;
-          console.log('📡 Broadcasting timer-tick:', { seconds, timerState, channelState });
           const result = await groupChannelRef.current.send({
             type: 'broadcast',
             event: 'timer-tick',
             payload: { seconds, timerState },
           });
-          console.log('📡 Broadcast result:', result);
+          console.log('📡 Broadcast sent, result:', result);
         } catch (error) {
           console.error('❌ Broadcast error:', error);
         }
@@ -861,7 +860,7 @@ export default function Home() {
     const interval = setInterval(broadcastTick, 1000);
 
     return () => clearInterval(interval);
-  }, [currentGroup, isGroupCreator, timerState, seconds, isChannelReady]);
+  }, [currentGroup, isGroupCreator, timerState, seconds]);
 
   // Timer logic
   useEffect(() => {
