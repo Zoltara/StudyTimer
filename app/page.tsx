@@ -453,6 +453,11 @@ export default function Home() {
     groupChannelRef.current = channel;
     console.log('📌 Channel stored in ref');
 
+    // Log channel state changes
+    channel.on('system', {}, (payload) => {
+      console.log('🔧 Channel system event:', payload);
+    });
+
     channel
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` }, (payload) => {
         console.log('📥 DB: New Message detected', payload.new);
@@ -542,23 +547,34 @@ export default function Home() {
       })
       .on('broadcast', { event: 'group-deleted' }, () => window.location.reload())
       .subscribe((status) => {
-        console.log(`🔌 Realtime Status: ${status}`);
+        console.log(`🔌 Realtime Status: ${status}, Channel State: ${channel.state}`);
         const isSubscribed = status === 'SUBSCRIBED';
         setIsRealtimeConnected(isSubscribed);
         
         if (isSubscribed) {
-          console.log('✅ Realtime channel SUBSCRIBED');
-          // Wait a moment for the channel to fully initialize
-          setTimeout(() => {
-            console.log('✅ Channel ready for broadcasts!');
+          console.log('✅ Realtime channel SUBSCRIBED - Channel State:', channel.state);
+          // Check if channel is actually in 'joined' state
+          if (channel.state === 'joined') {
+            console.log('✅ Channel in JOINED state - ready for broadcasts!');
             setIsChannelReady(true);
-          }, 500);
+          } else {
+            // Wait a moment for the channel to reach joined state
+            setTimeout(() => {
+              console.log('⏰ Delayed check - Channel State:', channel.state);
+              if (channel.state === 'joined') {
+                console.log('✅ Channel ready for broadcasts!');
+                setIsChannelReady(true);
+              } else {
+                console.error('❌ Channel not in joined state after delay:', channel.state);
+              }
+            }, 1000);
+          }
         } else {
           setIsChannelReady(false);
           if (status === 'CLOSED') {
             console.warn('⚠️ Realtime channel CLOSED');
           } else if (status === 'CHANNEL_ERROR') {
-            console.error('❌ Realtime channel ERROR');
+            console.error('❌ Realtime channel ERROR - State:', channel.state);
           }
         }
       });

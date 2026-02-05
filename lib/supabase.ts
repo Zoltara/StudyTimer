@@ -7,9 +7,17 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.error('Missing Supabase environment variables!');
   console.error('URL exists:', !!supabaseUrl);
   console.error('Key exists:', !!supabaseAnonKey);
+} else {
+  console.log('✅ Supabase configured:', { url: supabaseUrl.substring(0, 30) + '...' });
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  realtime: {
+    params: {
+      eventsPerSecond: 10,
+    },
+  },
+});
 
 // Auth functions
 export const signUp = async (email: string, password: string) => {
