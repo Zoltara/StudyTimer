@@ -505,11 +505,17 @@ export default function Home() {
         }
       })
       .on('broadcast', { event: 'timer-tick' }, (payload) => {
-        console.log('📥 Received timer-tick:', payload.payload, { isCreator: isGroupCreatorRef.current, synced: useSyncedTimerRef.current });
+        console.log('📥 Received timer-tick broadcast:', payload.payload, { 
+          isCreator: isGroupCreatorRef.current, 
+          synced: useSyncedTimerRef.current,
+          currentUser: currentUserRef.current?.name
+        });
         if (!isGroupCreatorRef.current && useSyncedTimerRef.current) {
-          console.log('✅ Applying timer-tick update');
+          console.log('✅ Applying timer-tick update to synced user');
           setSeconds(payload.payload.seconds);
           setTimerState(payload.payload.timerState);
+        } else {
+          console.log('⏭️ Skipping timer-tick (either creator or not synced)');
         }
       })
       .on('broadcast', { event: 'timer-sync' }, (payload) => {
