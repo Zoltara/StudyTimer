@@ -833,42 +833,74 @@ export default function Home() {
     return () => clearTimeout(timeout);
   }, [currentGroup?.id, currentUser?.id, isGroupCreator, useSyncedTimer]);
 
-  // Broadcast timer tick to group members (group creator only)
+  // Update timer state in database for syncing (group creator only)
   useEffect(() => {
-    // Simplified: Don't wait for channel ready - broadcast as long as we have a group and are creator
-    if (!currentGroup || !isGroupCreator || timerState === 'idle') {
+    if (!currentGroup || !isGroupCreator || !currentUser || timerState === 'idle') {
       return;
     }
 
-    console.log('📡 Timer broadcast enabled:', { timerState, seconds, isGroupCreator });
+    console.log('💾 Updating timer state in database:', { timerState, seconds });
 
-    const broadcastTick = async () => {
-      if (groupChannelRef.current) {
-        try {
-          const result = await groupChannelRef.current.send({
-            type: 'broadcast',
-            event: 'timer-tick',
-            payload: { seconds, timerState },
-          });
-          console.log('📡 Broadcast sent, result:', result);
-        } catch (error) {
-          console.error('❌ Broadcast error:', error);
-        }
-      } else {
-        console.warn('⚠️ Cannot broadcast: No group channel');
+    const updateTimerState = async () => {
+      try {
+        await supabase
+          .from('users')
+          .update({ 
+            timer_state: timerState,
+            timer_seconds: seconds,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', currentUser.id);
+      } catch (error) {
+        console.error('❌ Error updating timer state:', error);
       }
     };
 
-    // Initial broadcast
-    broadcastTick();
-
-    // Broadcast every second
-    const interval = setInterval(broadcastTick, 1000);
+    // Update every second
+    const interval = setInterval(updateTimerState, 1000);
 
     return () => clearInterval(interval);
-  }, [currentGroup, isGroupCreator, timerState, seconds]);
+  }, [currentGroup, isGroupCreator, currentUser, timerState, seconds]);
 
-  // Timer logic
+  // Poll for creator's timer state (non-creators with synced timer only)
+  useEffect(() => {
+    if (!currentGroup || !currentUser || isGroupCreator || !useSyncedTimer) {
+      return;
+    }
+
+    console.log('🔄 Polling for creator timer state...');
+
+    const pollTimerState = async () => {
+      try {
+        // Get the creator's user record
+        const { data: creatorData } = await supabase
+          .from('users')
+          .select('timer_state, timer_seconds, auth_id')
+          .eq('group_id', currentGroup.id)
+          .eq('auth_id', currentGroup.created_by)
+          .single();
+
+        if (creatorData && creatorData.timer_state && creatorData.timer_seconds !== null) {
+          console.log('✅ Syncing to creator timer:', { 
+            state: creatorData.timer_state, 
+            seconds: creatorData.timer_seconds 
+          });
+          setTimerState(creatorData.timer_state as any);
+          setSeconds(creatorData.timer_seconds);
+        }
+      } catch (error) {
+        console.error('❌ Error polling timer state:', error);
+      }
+    };
+
+    // Poll every second
+    const interval = setInterval(pollTimerState, 1000);
+    
+    // Initial poll
+    pollTimerState();
+
+    return () => clearInterval(interval);
+  }, [currentGroup, currentUser, isGroupCreator, useSyncedTimer]);
   useEffect(() => {
     let interval: NodeJS.Timeout | undefined;
 
