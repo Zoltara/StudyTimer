@@ -1722,6 +1722,11 @@ export default function Home() {
                 </div>
                 <button
                   onClick={async () => {
+                    // Send logout message before removing user
+                    if (currentUser && currentGroup) {
+                      await addSystemMessage(`👋 ${currentUser.name} signed out.`);
+                    }
+                    
                     // Delete user from database (removes from group and leaderboard)
                     if (currentUser) {
                       await supabase.from('users').delete().eq('id', currentUser.id);
@@ -2447,6 +2452,11 @@ export default function Home() {
               </button>
               <button
                 onClick={async () => {
+                  // Send logout message before removing user
+                  if (currentUser && currentGroup) {
+                    await addSystemMessage(`👋 ${currentUser.name} signed out.`);
+                  }
+                  
                   // Delete user from database (removes from group and leaderboard)
                   if (currentUser) {
                     await supabase.from('users').delete().eq('id', currentUser.id);
@@ -2980,7 +2990,7 @@ export default function Home() {
                       return order[a.status] - order[b.status];
                     })
                     .map((friend) => (
-                      <div key={friend.id} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg">
+                      <div key={friend.id} className="flex justify-between items-center p-2 bg-zinc-800 rounded-lg gap-2">
                         <span className="flex items-center gap-2">
                           <span
                             className={`w-2 h-2 rounded-full ${friend.status === 'focus'
@@ -2994,7 +3004,30 @@ export default function Home() {
                           />
                           {friend.name}
                         </span>
-                        <span className="text-xs text-zinc-400 capitalize">{friend.status}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-zinc-400 capitalize">{friend.status}</span>
+                          {isGroupCreator && (
+                            <button
+                              onClick={async () => {
+                                if (!confirm(`Remove ${friend.name} from the group?`)) return;
+                                
+                                // Delete user from database (removes from group and leaderboard)
+                                await supabase.from('users').delete().eq('id', friend.id);
+                                
+                                // Update local state
+                                setFriends(prev => prev.filter(f => f.id !== friend.id));
+                                setAllUsers(prev => prev.filter(u => u.id !== friend.id));
+                                
+                                // Send system message
+                                await addSystemMessage(`🚫 ${friend.name} was removed from the group by ${userName}.`);
+                              }}
+                              className="text-xs px-2 py-0.5 rounded bg-red-600 hover:bg-red-700 transition"
+                              title="Remove user"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))
                 )}
