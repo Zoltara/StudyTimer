@@ -2660,50 +2660,64 @@ export default function Home() {
               </div>
 
               <div className="space-y-2">
-                {timerState === 'idle' && (
-                  <button
-                    onClick={startFocus}
-                    className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
-                  >
-                    Start Focus Session
-                  </button>
-                )}
-
-                {timerState === 'focus' && (
-                  <button
-                    onClick={quitSession}
-                    className="w-full py-3 rounded-lg font-semibold bg-red-600 hover:bg-red-700 transition"
-                  >
-                    Quit Session
-                  </button>
-                )}
-
-                {timerState === 'break' && (
-                  <>
-                    <button
-                      onClick={backFromBreak}
-                      className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
-                    >
-                      Back from Break
-                    </button>
-                    <p className="text-center text-yellow-400 text-sm">
-                      Click before timer ends or you&apos;ll be marked as lost!
+                {/* Timer controls - disabled for synced non-creators */}
+                {!isGroupCreator && useSyncedTimer ? (
+                  <div className="w-full py-3 rounded-lg bg-zinc-800 border border-zinc-700 text-center">
+                    <p className="text-sm text-zinc-400">
+                      🔒 Timer controlled by group creator
                     </p>
-                  </>
-                )}
+                    <p className="text-xs text-zinc-500 mt-1">
+                      Enable "Use Own Timer" below to control your own timer
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {timerState === 'idle' && (
+                      <button
+                        onClick={startFocus}
+                        className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                      >
+                        Start Focus Session
+                      </button>
+                    )}
 
-                {timerState === 'lostInBreak' && (
-                  <button
-                    onClick={() => {
-                      setTimerState('idle');
-                      setSeconds(settings.focusTime * 60);
-                      setCycleCount(0);
-                      updateUserStatus('online');
-                    }}
-                    className="w-full py-3 rounded-lg font-semibold bg-zinc-700 hover:bg-zinc-600 transition"
-                  >
-                    Reset Timer
-                  </button>
+                    {timerState === 'focus' && (
+                      <button
+                        onClick={quitSession}
+                        className="w-full py-3 rounded-lg font-semibold bg-red-600 hover:bg-red-700 transition"
+                      >
+                        Quit Session
+                      </button>
+                    )}
+
+                    {timerState === 'break' && (
+                      <>
+                        <button
+                          onClick={backFromBreak}
+                          className="w-full py-3 rounded-lg font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                        >
+                          Back from Break
+                        </button>
+                        <p className="text-center text-yellow-400 text-sm">
+                          Click before timer ends or you&apos;ll be marked as lost!
+                        </p>
+                      </>
+                    )}
+
+                    {timerState === 'lostInBreak' && (
+                      <button
+                        onClick={() => {
+                          setTimerState('idle');
+                          setSeconds(settings.focusTime * 60);
+                          setCycleCount(0);
+                          updateUserStatus('online');
+                        }}
+                        className="w-full py-3 rounded-lg font-semibold bg-zinc-700 hover:bg-zinc-600 transition"
+                      >
+                        Reset Timer
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
 
