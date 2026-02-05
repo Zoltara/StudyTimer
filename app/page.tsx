@@ -444,6 +444,10 @@ export default function Home() {
       }
     });
 
+    // Store channel ref immediately so broadcasts can use it
+    groupChannelRef.current = channel;
+    console.log('📌 Channel stored in ref immediately');
+
     channel
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${currentGroup.id}` }, (payload) => {
         console.log('📥 DB: New Message detected', payload.new);
@@ -535,7 +539,13 @@ export default function Home() {
       .subscribe((status) => {
         console.log(`🔌 Realtime Status: ${status}`);
         setIsRealtimeConnected(status === 'SUBSCRIBED');
-        if (status === 'SUBSCRIBED') groupChannelRef.current = channel;
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Realtime channel SUBSCRIBED - broadcasts ready!');
+        } else if (status === 'CLOSED') {
+          console.warn('⚠️ Realtime channel CLOSED');
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Realtime channel ERROR');
+        }
       });
 
     return () => {
@@ -814,7 +824,8 @@ export default function Home() {
     const broadcastTick = async () => {
       if (groupChannelRef.current) {
         try {
-          console.log('📡 Broadcasting timer-tick:', { seconds, timerState });
+          const channelState = groupChannelRef.current.state;
+          console.log('📡 Broadcasting timer-tick:', { seconds, timerState, channelState });
           const result = await groupChannelRef.current.send({
             type: 'broadcast',
             event: 'timer-tick',
