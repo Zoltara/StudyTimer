@@ -6,9 +6,10 @@ export const metadata: Metadata = {
   description: 'Study Timer with Accountability Partners',
   icons: {
     icon: [
-      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icons/favicon-32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/icons/favicon-192.png', sizes: '192x192', type: 'image/png' },
     ],
-    apple: '/icon.svg',
+    apple: '/icons/favicon-180.png',
   },
   manifest: '/manifest.json',
   appleWebApp: {
